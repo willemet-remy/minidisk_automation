@@ -36,12 +36,11 @@ The main objectives are:
 | Objective Number | Idea | Description | Pros | Cons | Comments |
 |-----------|------|-------------|------|------|---------|
 | 1 | Vacuum pump + pressure sensor | Actively control tension via vacuum pump | Fast response, precise control | Higher cost, higher power demand | Suitable for lab setups |
-| 1 | Servo + threaded lift system | Physically adjust tension in Mariotte bottles | Simple, robust concept | Sensitive to horizontal alignment | Potential for field deployment |
+| 1 | ![Servo + threaded lift system]("/Figures/Mariotte_Cylinder.gif") | Physically adjust tension in Mariotte bottles | Simple, robust concept | Sensitive to horizontal alignment | Potential for field deployment |
 | 2 | SD card logging | Local storage of sensor data | Reliable, simple | Manual data retrieval | Ideal for remote field sites |
 | 2 | Wireless transmission (ESP32/Raspberry Pi) | Real-time data access | Continuous monitoring | | Useful for hand free system |
 | 2 | Caps modification | Connect Mariotte bottles to the bottom and top cap with sensors | Simplifies design, supports different acrylic tube size | - | |
 
-![Servo + threaded lift system]("minidisk_automation/Figures/Mariotte_Cylinder.gif")
 ---
 ## Material links
 | Objective Number | Components | Description | Pros | Cons | Comments |
