@@ -33,17 +33,17 @@ The main objectives are:
 
 ## Design Concepts
 
-| Objectives Number | Idea | Description | Pros | Cons | Comments |
+| Objective Number | Idea | Description | Pros | Cons | Comments |
 |-----------|------|-------------|------|------|---------|
 | 1 | Vacuum pump + pressure sensor | Actively control tension via vacuum pump | Fast response, precise control | Higher cost, higher power demand | Suitable for lab setups |
-| 1 | Servo + threaded lift system knitr::include_graphics("Figures/Mariotte_Cylinder.gif") | Physically adjust tension in Mariotte bottles | Simple, robust concept | Sensitive to horizontal alignment | Potential for field deployment |
+| 1 | [Servo + threaded lift system]("Figures/Mariotte_Cylinder.gif") | Physically adjust tension in Mariotte bottles | Simple, robust concept | Sensitive to horizontal alignment | Potential for field deployment |
 | 2 | SD card logging | Local storage of sensor data | Reliable, simple | Manual data retrieval | Ideal for remote field sites |
 | 2 | Wireless transmission (ESP32/Raspberry Pi) | Real-time data access | Continuous monitoring | | Useful for hand free system |
 | 2 | Caps modification | Connect Mariotte bottles to the bottom and top cap with sensors | Simplifies design, supports different acrylic tube size | - | |
 
 ---
 ## Material links
-| Objectives number | Components | Description | Pros | Cons | Comments |
+| Objective Number | Components | Description | Pros | Cons | Comments |
 |-----------|------|-------------|------|------|---------|
 | 1 | [Differential pressure sensors](https://www.mouser.be/ProductDetail/Honeywell/ABP2DDAN001PD2A3XX?qs=pUKx8fyJudBCfXbaK3v%252BwQ%3D%3D) | Low cost differential pressure | | | 3.3V |
 | 2 | [ToF sensors : L53L4CD](https://community.st.com/t5/mems-and-sensors/how-to-choose-a-time-of-flight-sensor/ta-p/49721) | Low cost and ~mm resolution|Possibility to give an adress | | 3.3V |
