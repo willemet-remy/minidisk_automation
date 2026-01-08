@@ -43,11 +43,11 @@ The main objectives are:
 
 ---
 ## Material links
-|Objectives number | Components | Description | Pros | Cons | Comments |
-|1|[Differential pressure sensors](https://www.mouser.be/ProductDetail/Honeywell/ABP2DDAN001PD2A3XX?qs=pUKx8fyJudBCfXbaK3v%252BwQ%3D%3D)|Low cost differential pressure|||3.3V|
-|2|[ToF sensors : L53L4CD](https://community.st.com/t5/mems-and-sensors/how-to-choose-a-time-of-flight-sensor/ta-p/49721)|Low cost and ~mm resolution|Possibility to give an adress||3.3V|
-|1|[Sevo motors](https://www.digikey.be/en/products/filter/motors-ac-dc/178?s=N4IgjCBcpgLFoDGUBmBDANgZwKYBoQB7KAbXADYBOWKkAgDgHYBWWegBjouvua48rty8AgCYw7UY0pdxkjl0axxUxeSZgZYifTD1ZO5lpD1R7WO04MzAZkrHRsSs3rkQAXQIAHAC5QQAMo%2BAE4AlgB2AOYgAL4EejYIIMiQ6Nj4RKQgNjYszIwe3n6QgSER0XHglKrQyaiYuATEkGQ5NsyShSC%2B-kFhUbGVolm4wQBuhAAEALaEPoTBWF1utaEAJv4AtBIQRf5cPgCeXjj%2BaFjIMTFAA)|||||
-|||||||
+| Objectives number | Components | Description | Pros | Cons | Comments |
+|-----------|------|-------------|------|------|---------|
+| 1 | [Differential pressure sensors](https://www.mouser.be/ProductDetail/Honeywell/ABP2DDAN001PD2A3XX?qs=pUKx8fyJudBCfXbaK3v%252BwQ%3D%3D) | Low cost differential pressure | | | 3.3V |
+| 2 | [ToF sensors : L53L4CD](https://community.st.com/t5/mems-and-sensors/how-to-choose-a-time-of-flight-sensor/ta-p/49721) | Low cost and ~mm resolution|Possibility to give an adress | | 3.3V |
+| 1 | [Sevo motors](https://www.digikey.be/en/products/filter/motors-ac-dc/178?s=N4IgjCBcpgLFoDGUBmBDANgZwKYBoQB7KAbXADYBOWKkAgDgHYBWWegBjouvua48rty8AgCYw7UY0pdxkjl0axxUxeSZgZYifTD1ZO5lpD1R7WO04MzAZkrHRsSs3rkQAXQIAHAC5QQAMo%2BAE4AlgB2AOYgAL4EejYIIMiQ6Nj4RKQgNjYszIwe3n6QgSER0XHglKrQyaiYuATEkGQ5NsyShSC%2B-kFhUbGVolm4wQBuhAAEALaEPoTBWF1utaEAJv4AtBIQRf5cPgCeXjj%2BaFjIMTFAA) | | | | |
 
 ---
 
