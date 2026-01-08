@@ -41,7 +41,7 @@ The main objectives are:
 | 2 | Wireless transmission (ESP32/Raspberry Pi) | Real-time data access | Continuous monitoring | | Useful for hand free system |
 | 2 | Caps modification | Connect Mariotte bottles to the bottom and top cap with sensors | Simplifies design, supports different acrylic tube size | - | |
 
-![Servo + threaded lift system]("Figures/Mariotte_Cylinder.gif")
+![Servo + threaded lift system]("minidisk_automation/Figures/Mariotte_Cylinder.gif")
 ---
 ## Material links
 | Objective Number | Components | Description | Pros | Cons | Comments |
