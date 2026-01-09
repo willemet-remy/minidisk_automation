@@ -54,6 +54,7 @@ The main objectives are:
 ##  Questions
 - Can a single Mariotte bottle serve multiple Minidisks, or is it preferable to provide active control for each Minidisk individually?  
 Would it be a nice to try to develop a system that can have different regulated tension ports. For example, different chambers with several servos + threated lift system
+- The servo + threaded lift system needs to be controled mm accuracy. A servo motor can't do that and a stepper motors is too expensive. Which solutions ? 
 
 ---
 
