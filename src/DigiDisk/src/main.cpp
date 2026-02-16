@@ -42,6 +42,8 @@ void setup()
   Serial.begin(115200);
   delay(1000);
   Serial.println("Start I2C connection");
+  pinMode(2, OUTPUT);
+  digitalWrite(2, HIGH);
   Wire.begin();
   Wire.setClock(400000); // use 400 kHz I2C
 
