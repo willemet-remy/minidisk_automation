@@ -1,105 +1,32 @@
-/*
-This example shows how to set up and read multiple VL53L4CD sensors connected to
-the same I2C bus. Each sensor needs to have its XSHUT pin connected to a
-different Arduino pin, and you should change sensorCount and the xshutPins array
-below to match your setup.
+#define SHUTDOWN_PIN 2 //D2 pin
+#define INTERRUPT_PIN 3 //Normally no need
+#include <wire.h>
+#include <Arduino.h>
+#include "SparkFun_VL53L1X.h" 
 
-For more information, see ST's application note AN4846 ("Using multiple VL53L0X
-in a single design"). The principles described there apply to the VL53L4CD as
-well.
-*/
+SFEVL53L1X distanceSensor(Wire, SHUTDOWN_PIN, INTERRUPT_PIN);
 
-#include <Wire.h>
-#include <VL53L4CD.h>
-
-// The number of sensors in your system.
-const uint8_t sensorCount = 1;
-
-// The Arduino pin connected to the XSHUT pin of each sensor.
-const uint8_t xshutPins[sensorCount] = {2};
-
-VL53L4CD sensors[sensorCount];
-// Scan I2C bus for MCP23X17 devices and return the first address found, or -1 if none.
-int scanI2C() {
-    Serial.println("Scanning I2C bus for VL53 devices...");
-    int deviceCount = 0;
-    int firstAddr = -1;
-
-    Wire.beginTransmission(0x29);
-    if (Wire.endTransmission() == 0) {
-        Serial.println("VL53L4CD found at 0x29");
-        return 0x29;
-    } else {
-        Serial.println("No device found at 0x29");
-        return -1;
-    }
-}
-
-
-void setup()
+void setup(void)
 {
-  while (!Serial) {}
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("Start I2C connection");
   Wire.begin();
-  Wire.setClock(400000); // use 400 kHz I2C
 
-  while (true) {  // Infinite loop until a device is found
-        int addr = scanI2C();
-        if (addr < 0) {
-            Serial.println("No VL device found. Restarting scan...");
-            delay(2000);
-            continue;  // Skip the rest of the loop and scan again
-        }
+  Serial.begin(115200);
+  pinMode(2, OUTPUT);
+  digitalWrite(2, HIGH);
+  Serial.println("VL53L1X Qwiic Test");
+  Serial.println(distanceSensor.getSensorID());
+  if (distanceSensor.init() == false)
+    Serial.println("Sensor online!");
 
-        Serial.print("VL at address 0x");
-        Serial.println(addr, HEX);
-        break;  // Exit the loop and continue with the rest of setup()
-    }
-    
-  // Disable/reset all sensors by driving their XSHUT pins low.
-  for (uint8_t i = 0; i < sensorCount; i++)
-  {
-    Serial.println("Xshut low");
-    pinMode(xshutPins[i], OUTPUT);
-    digitalWrite(xshutPins[i], LOW);
-  }
-
-  // Enable, initialize, and start each sensor, one by one.
-  for (uint8_t i = 0; i < sensorCount; i++)
-  {
-    // Stop driving this sensor's XSHUT low. This should allow the carrier
-    // board to pull it high. (We do NOT want to drive XSHUT high since it is
-    // not level shifted.) Then wait a bit for the sensor to start up.
-    pinMode(xshutPins[i], HIGH);
-    delay(10);
-    Serial.println("Xshut Hight");
-
-    sensors[i].setTimeout(500);
-    if (!sensors[i].init())
-    {
-      Serial.print("Failed to detect and initialize sensor ");
-      Serial.println(i);
-      while (1);
-    }
-
-    // Each sensor must have its address changed to a unique value other than
-    // the default of 0x29 (except for the last one, which could be left at
-    // the default). To make it simple, we'll just count up from 0x2A.
-    sensors[i].setAddress(0x2A + i);
-
-    sensors[i].startContinuous();
-  }
 }
 
-void loop()
+void loop(void)
 {
-  for (uint8_t i = 0; i < sensorCount; i++)
-  {
-    Serial.print(sensors[i].read());
-    if (sensors[i].timeoutOccurred()) { Serial.print(" TIMEOUT"); }
-    Serial.print('\t');
-  }
-  Serial.println();
+  distanceSensor.startRanging(); //Write configuration bytes to initiate measurement
+  int distance = distanceSensor.getDistance(); //Get the result of the measurement from the sensor
+  distanceSensor.stopRanging();
+
+  Serial.println("Distance(mm): ");
+  Serial.print(distance);
+  delay(2000);
 }
