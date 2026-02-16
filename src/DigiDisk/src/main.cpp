@@ -25,26 +25,15 @@ int scanI2C() {
     int deviceCount = 0;
     int firstAddr = -1;
 
-    // Scan typical VL53 address range
-    for (uint8_t addr = 0x29; addr <= 0x2F; addr++) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-            Serial.print("Found VL53 at address: 0x");
-            Serial.println(addr, HEX);
-
-            if (firstAddr == -1) firstAddr = addr;
-            deviceCount++;
-        }
-    }
-
-    if (deviceCount == 0) {
-        Serial.println("No VL53 devices found.");
-        return -1;
+    Wire.beginTransmission(0x29);
+    if (Wire.endTransmission() == 0) {
+        Serial.println("VL53L4CD found at 0x29");
+        return 0x29;
     } else {
-        return firstAddr;
+        Serial.println("No device found at 0x29");
+        return -1;
     }
 }
-
 
 
 void setup()
