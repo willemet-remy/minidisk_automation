@@ -12,11 +12,11 @@ Measurements are logged to CSV on a USB stick.
 
 | Component | Purpose | Qty |
 |---|---|---|
-| Raspberry Pi Zero 2 W | Main controller | 1 |
-| Official RPi 7" Touchscreen | User interface | 1 |
-| VL53L4CD breakout (Pololu #3415) | Distance sensor | 8 |
+| Raspberry Pi Zero | Main controller | 1 |
+| Waveshare 7" Control Panel for Raspberry Pi 4 | User interface | 1 |
+| VL53L4CD breakout | Distance sensor | 8 |
 | MCP23017-E/SP (DIP-28) | XSHUT + GPIO1 I/O expander | 1 |
-| PiJuice HAT | LiPo power management + UPS | 1 |
+| Waveshare UPS Hat (C) for Raspberry Pi Zero 5V | LiPo power management + UPS | 1 |
 | LiPo 3.7V ≥ 5000 mAh | Battery | 1 |
 | 4.7 kΩ resistor | I2C SDA/SCL pull-ups | 2 |
 | 10 kΩ resistor | XSHUT pull-downs | 8 |
