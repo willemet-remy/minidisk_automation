@@ -1,32 +1,49 @@
-#define SHUTDOWN_PIN 2 //D2 pin
-#define INTERRUPT_PIN 3 //Normally no need
-#include <wire.h>
+#define SHUTDOWN_PIN 2
+#include <Wire.h>
 #include <Arduino.h>
-#include "SparkFun_VL53L1X.h" 
+#include "SparkFun_VL53L1X.h"
 
-SFEVL53L1X distanceSensor(Wire, SHUTDOWN_PIN, INTERRUPT_PIN);
+SFEVL53L1X distanceSensor;
 
 void setup(void)
 {
-  Wire.begin();
-
   Serial.begin(115200);
-  pinMode(2, OUTPUT);
-  digitalWrite(2, HIGH);
-  Serial.println("VL53L1X Qwiic Test");
-  Serial.println(distanceSensor.getSensorID());
-  if (distanceSensor.init() == false)
-    Serial.println("Sensor online!");
+  while (!Serial);
 
+  Wire.begin();
+  pinMode(SHUTDOWN_PIN, OUTPUT);
+
+  // Reset sensor
+  digitalWrite(SHUTDOWN_PIN, LOW);
+  delay(10);
+  digitalWrite(SHUTDOWN_PIN, HIGH);
+  delay(100);
+  Serial.println("Start sensor connection.");
+
+  if (distanceSensor.begin() != 0)
+  {
+    Serial.println("Sensor failed to begin.");
+    while (1);
+  }
+
+  Serial.print("Sensor ID: ");
+  Serial.println(distanceSensor.getSensorID());
+
+  Serial.println("Sensor online!");
 }
 
 void loop(void)
 {
   distanceSensor.startRanging(); //Write configuration bytes to initiate measurement
+  while (!distanceSensor.checkForDataReady())
+  {
+    delay(1);
+  }
   int distance = distanceSensor.getDistance(); //Get the result of the measurement from the sensor
+  distanceSensor.clearInterrupt();
   distanceSensor.stopRanging();
 
-  Serial.println("Distance(mm): ");
-  Serial.print(distance);
+  Serial.print("Distance(mm): ");
+  Serial.println(distance);
   delay(2000);
 }
