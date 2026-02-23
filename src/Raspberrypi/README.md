@@ -110,6 +110,7 @@ GPIO1 → MCP23017 GPB[n]
 1. Flash Raspberry Pi OS **with Desktop** (Bookworm 64-bit) to SD card.
 2. Boot, connect to network briefly (for apt).
 3. Copy the infiltrometer folder to the Pi.
+scp -r /home/remy/Documents/minidisk_automation/src/Raspberrypi remy@raspberrypi_ip:/Documents/minidisk
 4. Run:
    ```bash
    cd /path/to/infiltrometer

@@ -15,7 +15,7 @@ import logging
 from smbus2 import SMBus, i2c_msg
 from config import (
     I2C_BUS, MCP23017_ADDR, VL53L4CD_DEFAULT_ADDR, SENSOR_ADDRESSES,
-    NUM_SENSORS, MCP_IODIRA, MCP_IODIRB, MCP_GPPUA, MCP_GPPUB,
+    MAX_SENSORS, MCP_IODIRA, MCP_IODIRB, MCP_GPPUA, MCP_GPPUB,
     MCP_GPIOA, MCP_GPIOB, MCP_OLATA, LOW_WATER_THRESHOLD_MM
 )
 
@@ -169,18 +169,19 @@ class VL53L4CD_ST:
 # ─────────────────────────────────────────────────────────────────────────────
 class SensorManager:
     """
-    Manages all 8 VL53L4CD sensors via MCP23017 XSHUT control.
+    Manages up to MAX_SENSORS VL53L4CD sensors via MCP23017 XSHUT control.
 
     Usage:
-        mgr = SensorManager()
-        mgr.initialise()          # assigns addresses, inits sensors
-        distances = mgr.read_all()  # {sensor_idx: distance_mm or None}
+        mgr = SensorManager(num_sensors=3)
+        mgr.initialise()            # assigns addresses, inits sensors
+        distances = mgr.read_all()  # {sensor_idx: {...}} for active sensors
         mgr.shutdown()
     """
 
-    def __init__(self):
+    def __init__(self, num_sensors: int = MAX_SENSORS):
+        self._num_sensors = max(1, min(num_sensors, MAX_SENSORS))
         self.bus = SMBus(I2C_BUS)
-        self.sensors: list = [None] * NUM_SENSORS
+        self.sensors: list = [None] * self._num_sensors
         self._xshut_state: int = 0x00   # current MCP port A output latch
 
     # ── MCP23017 helpers ──────────────────────────────────────────────────────
@@ -222,26 +223,33 @@ class SensorManager:
         GPIO1 on VL53L4CD is open-drain, active low, pulled up on MCP.
         """
         raw = self._mcp_read(MCP_GPIOB)
-        return [not bool(raw & (1 << i)) for i in range(NUM_SENSORS)]
+        return [not bool(raw & (1 << i)) for i in range(self._num_sensors)]
 
     # ── Initialisation ────────────────────────────────────────────────────────
 
-    def initialise(self) -> list[bool]:
+    def initialise(self, num_sensors: int | None = None) -> list[bool]:
         """
         Full initialisation sequence.
         Returns list[bool] indicating which sensors initialised successfully.
+
+        Args:
+            num_sensors: override the instance's active sensor count.
         """
-        log.info("Starting sensor initialisation")
+        if num_sensors is not None:
+            self._num_sensors = max(1, min(num_sensors, MAX_SENSORS))
+            self.sensors = [None] * self._num_sensors
+
+        log.info(f"Starting sensor initialisation ({self._num_sensors} sensors)")
         self._setup_mcp()
         time.sleep(0.05)
 
         success = []
-        for idx in range(NUM_SENSORS):
+        for idx in range(self._num_sensors):
             ok = self._init_single_sensor(idx)
             success.append(ok)
 
         online = sum(success)
-        log.info(f"Initialisation complete: {online}/{NUM_SENSORS} sensors online")
+        log.info(f"Initialisation complete: {online}/{self._num_sensors} sensors online")
         return success
 
     def _init_single_sensor(self, idx: int) -> bool:
@@ -292,7 +300,7 @@ class SensorManager:
         """
         Read distance from all active sensors.
 
-        Returns dict keyed by sensor index (0–7):
+        Returns dict keyed by sensor index (0 … num_sensors-1):
             {
               'distance_mm': int or None,
               'status': int,           # 0 = valid, other = error code
@@ -303,7 +311,8 @@ class SensorManager:
         faults = self.read_gpio_faults()
         results = {}
 
-        for idx, sensor in enumerate(self.sensors):
+        for idx in range(self._num_sensors):
+            sensor = self.sensors[idx] if idx < len(self.sensors) else None
             if sensor is None:
                 results[idx] = {
                     'distance_mm': None,

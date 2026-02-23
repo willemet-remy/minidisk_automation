@@ -9,7 +9,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
     handlers=[
-        logging.FileHandler("/home/pi/infiltrometer.log"),
+        logging.FileHandler("/home/remy/infiltrometer.log"),
         logging.StreamHandler(sys.stdout),
     ]
 )

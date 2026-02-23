@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from config import (
     USB_MOUNT_PATH, FALLBACK_DATA_DIR,
-    CSV_DELIMITER, CSV_TIMESTAMP_FORMAT, NUM_SENSORS
+    CSV_DELIMITER, CSV_TIMESTAMP_FORMAT, MAX_SENSORS
 )
 
 log = logging.getLogger(__name__)
@@ -34,49 +34,78 @@ class DataLogger:
     Writes one CSV file per measurement session.
 
     File name format: infiltrometer_YYYYMMDD_HHMMSS.csv
+    Stored inside: <base_dir>/<folder_name>/
 
-    CSV columns:
-        timestamp, sensor_0_mm, sensor_1_mm, ..., sensor_7_mm,
-        tension_0_hPa, tension_1_hPa, ..., tension_7_hPa,
-        fault_0, fault_1, ..., fault_7
+    CSV columns (for num_sensors sensors):
+        timestamp,
+        sensor_0_mm, …, sensor_N_mm,
+        tension_0_cmH2O, …, tension_N_cmH2O,
+        fault_0, …, fault_N,
+        low_water_0, …, low_water_N
     """
-
-    SENSOR_COLS   = [f"sensor_{i}_mm"      for i in range(NUM_SENSORS)]
-    TENSION_COLS  = [f"tension_{i}_hPa"    for i in range(NUM_SENSORS)]
-    FAULT_COLS    = [f"fault_{i}"          for i in range(NUM_SENSORS)]
-    LOW_WATER_COLS= [f"low_water_{i}"      for i in range(NUM_SENSORS)]
-
-    HEADER = ["timestamp"] + SENSOR_COLS + TENSION_COLS + FAULT_COLS + LOW_WATER_COLS
 
     def __init__(self):
         self._file = None
         self._writer = None
         self._filepath = None
-        self._tensions: list[float] = [0.0] * NUM_SENSORS
+        self._num_sensors: int = MAX_SENSORS
+        self._tensions: list[float] = [0.0] * MAX_SENSORS
+        self._header: list[str] = []
 
     # ── Configuration ─────────────────────────────────────────────────────────
 
     def set_tensions(self, tensions: list[float]):
-        """Store applied tension (hPa) per minidisk, called from GUI."""
+        """Store applied tension (cmH2O) per sensor, called from GUI."""
         self._tensions = list(tensions)
 
     # ── Session lifecycle ─────────────────────────────────────────────────────
 
-    def start_session(self) -> str:
-        """Open a new CSV file. Returns the file path."""
+    def start_session(
+        self,
+        folder_name: str,
+        num_sensors: int,
+        base_dir: str | None = None,
+    ) -> str:
+        """
+        Open a new CSV file inside <base_dir>/<folder_name>/.
+        Returns the file path.
+
+        Args:
+            folder_name:  name of the subfolder to create/use.
+            num_sensors:  how many sensors are active this session.
+            base_dir:     override base directory (default: USB or fallback).
+        """
         if self._file:
             self.stop_session()
 
-        data_dir = find_usb_path()
+        self._num_sensors = num_sensors
+
+        # Build column headers for this session
+        self._header = (
+            ["timestamp"]
+            + [f"sensor_{i}_mm"       for i in range(num_sensors)]
+            + [f"tension_{i}_cmH2O"   for i in range(num_sensors)]
+            + [f"fault_{i}"           for i in range(num_sensors)]
+            + [f"low_water_{i}"       for i in range(num_sensors)]
+        )
+
+        if base_dir is None:
+            base_dir = find_usb_path()
+
+        # Create session subfolder
+        session_dir = os.path.join(base_dir, folder_name.strip() or "session")
+        os.makedirs(session_dir, exist_ok=True)
+
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"infiltrometer_{timestamp_str}.csv"
-        self._filepath = os.path.join(data_dir, filename)
+        self._filepath = os.path.join(session_dir, filename)
 
         self._file = open(self._filepath, "w", newline="", encoding="utf-8")
         self._writer = csv.DictWriter(
             self._file,
-            fieldnames=self.HEADER,
-            delimiter=CSV_DELIMITER
+            fieldnames=self._header,
+            delimiter=CSV_DELIMITER,
+            extrasaction="ignore",
         )
         self._writer.writeheader()
         self._file.flush()
@@ -94,24 +123,39 @@ class DataLogger:
 
     # ── Writing ───────────────────────────────────────────────────────────────
 
-    def write_row(self, sensor_results: dict):
+    def write_row(self, sensor_results: dict, active_sensors: set | None = None):
         """
         Write one measurement row.
-        sensor_results is the dict returned by SensorManager.read_all().
+
+        Args:
+            sensor_results:  dict returned by SensorManager.read_all().
+            active_sensors:  set of sensor indices that are currently active
+                             (not paused). If None, all sensors are written.
+                             Paused sensors get empty strings for their columns.
         """
         if not self._writer:
             log.warning("write_row called but no active session")
             return
 
-        now = datetime.now().strftime(CSV_TIMESTAMP_FORMAT)
-        row = {"timestamp": now}
+        if active_sensors is None:
+            active_sensors = set(range(self._num_sensors))
 
-        for i in range(NUM_SENSORS):
-            data = sensor_results.get(i, {})
-            row[f"sensor_{i}_mm"]     = data.get("distance_mm", "")
-            row[f"tension_{i}_hPa"]   = self._tensions[i]
-            row[f"fault_{i}"]         = int(data.get("fault", False))
-            row[f"low_water_{i}"]     = int(data.get("low_water", False))
+        now = datetime.now().strftime(CSV_TIMESTAMP_FORMAT)
+        row: dict = {"timestamp": now}
+
+        for i in range(self._num_sensors):
+            if i in active_sensors:
+                data = sensor_results.get(i, {})
+                row[f"sensor_{i}_mm"]      = data.get("distance_mm", "")
+                row[f"tension_{i}_cmH2O"]  = self._tensions[i] if i < len(self._tensions) else ""
+                row[f"fault_{i}"]          = int(data.get("fault", False))
+                row[f"low_water_{i}"]      = int(data.get("low_water", False))
+            else:
+                # Sensor is paused — leave blank
+                row[f"sensor_{i}_mm"]      = ""
+                row[f"tension_{i}_cmH2O"]  = ""
+                row[f"fault_{i}"]          = ""
+                row[f"low_water_{i}"]      = ""
 
         self._writer.writerow(row)
         self._file.flush()   # ensure data is written even if power is cut

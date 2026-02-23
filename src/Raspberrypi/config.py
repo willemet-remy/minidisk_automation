@@ -12,7 +12,8 @@ VL53L4CD_DEFAULT_ADDR = 0x29
 # Assigned addresses for each sensor (0x2A – 0x31 avoids PiJuice at 0x14)
 SENSOR_ADDRESSES = [0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31]
 
-NUM_SENSORS = 8
+MAX_SENSORS = 8          # hard hardware limit (8 XSHUT lines on MCP23017)
+NUM_SENSORS = MAX_SENSORS  # kept for backward-compat; runtime value set via GUI
 
 # ── MCP23017 registers ────────────────────────────────────────────────────────
 # BANK=0 (default): registers interleaved
@@ -33,8 +34,8 @@ DEFAULT_INTERVAL = 5   # seconds
 LOW_WATER_THRESHOLD_MM = 20
 
 # ── Data logging ──────────────────────────────────────────────────────────────
-USB_MOUNT_PATH = "/media/pi"       # RPi OS auto-mounts USB sticks here
-FALLBACK_DATA_DIR = "/home/pi/infiltrometer_data"
+USB_MOUNT_PATH = "/media/remy"       # RPi OS auto-mounts USB sticks here
+FALLBACK_DATA_DIR = "/home/remy/infiltrometer_data"
 CSV_DELIMITER = ","
 CSV_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
