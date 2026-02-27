@@ -26,7 +26,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QColor, QPalette
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton,
-    QComboBox, QSpinBox, QLineEdit,
+    QComboBox, QSpinBox, QLineEdit, QDialog,
     QGridLayout, QVBoxLayout, QHBoxLayout,
     QFrame, QSizePolicy, QMessageBox
 )
@@ -48,12 +48,244 @@ COLOR_START_BTN  = COLOR_ACCENT     # green
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Virtual on-screen keyboard (touchscreen input)
+# ─────────────────────────────────────────────────────────────────────────────
+class VirtualKeyboard(QObject):
+    """Pop-up QWERTY keyboard dialog for touchscreen text entry."""
+
+    # Emitted when the user confirms; carries the final text string.
+    confirmed = pyqtSignal(str)
+
+    # Key layout rows
+    _ROWS = [
+        list("1234567890"),
+        list("qwertyuiop"),
+        list("asdfghjkl"),
+        list("zxcvbnm"),
+    ]
+
+    def __init__(self, initial_text: str = "", parent=None):
+        super().__init__(parent)
+        self._text = initial_text
+        self._dialog = None
+        self._lbl = None
+
+    # ── Public ────────────────────────────────────────────────────────────────
+
+    def exec(self) -> str:
+        """Show keyboard dialog; returns the entered text (or original on cancel)."""
+
+        dlg = QDialog()
+        dlg.setWindowTitle("Enter name")
+        dlg.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        dlg.setStyleSheet(f"""
+            QDialog {{
+                background-color: {COLOR_BG};
+                border: 2px solid #3A4A5C;
+                border-radius: 10px;
+            }}
+        """)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(8)
+
+        # ── Text display ──
+        self._lbl = QLabel(self._text or " ")
+        self._lbl.setMinimumWidth(340)
+        self._lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._lbl.setStyleSheet(f"""
+            QLabel {{
+                background-color: #1E2A3A;
+                color: {COLOR_TEXT};
+                border: 1px solid #3A4A5C;
+                border-radius: 5px;
+                padding: 6px 10px;
+                font-size: 16px;
+                min-height: 32px;
+            }}
+        """)
+        root.addWidget(self._lbl)
+
+        # ── Key rows ──
+        btn_css = f"""
+            QPushButton {{
+                background-color: #2C3E50;
+                color: {COLOR_TEXT};
+                border: 1px solid #3A4A5C;
+                border-radius: 5px;
+                font-size: 15px;
+                font-weight: bold;
+                min-width: 36px;
+                min-height: 36px;
+                padding: 0;
+            }}
+            QPushButton:pressed {{ background-color: {COLOR_ACCENT}; }}
+        """
+        special_css = f"""
+            QPushButton {{
+                background-color: #1E3A52;
+                color: {COLOR_TEXT};
+                border: 1px solid #3A4A5C;
+                border-radius: 5px;
+                font-size: 13px;
+                font-weight: bold;
+                min-height: 36px;
+                padding: 0 10px;
+            }}
+            QPushButton:pressed {{ background-color: {COLOR_ACCENT}; }}
+        """
+
+        for row in self._ROWS:
+            row_layout = QHBoxLayout()
+            row_layout.setSpacing(4)
+            row_layout.addStretch()
+            for ch in row:
+                btn = QPushButton(ch.upper())
+                btn.setStyleSheet(btn_css)
+                btn.setFocusPolicy(Qt.NoFocus)
+                btn.clicked.connect(lambda _, c=ch: self._press_char(c))
+                row_layout.addWidget(btn)
+            row_layout.addStretch()
+            root.addLayout(row_layout)
+
+        # ── Special keys row ──
+        special_row = QHBoxLayout()
+        special_row.setSpacing(4)
+        special_row.addStretch()
+
+        btn_space = QPushButton("SPACE")
+        btn_space.setStyleSheet(special_css)
+        btn_space.setMinimumWidth(120)
+        btn_space.setFocusPolicy(Qt.NoFocus)
+        btn_space.clicked.connect(lambda: self._press_char("_"))
+        special_row.addWidget(btn_space)
+
+        btn_back = QPushButton("⌫")
+        btn_back.setStyleSheet(special_css)
+        btn_back.setFocusPolicy(Qt.NoFocus)
+        btn_back.clicked.connect(self._press_backspace)
+        special_row.addWidget(btn_back)
+
+        btn_clear = QPushButton("CLR")
+        btn_clear.setStyleSheet(special_css)
+        btn_clear.setFocusPolicy(Qt.NoFocus)
+        btn_clear.clicked.connect(self._press_clear)
+        special_row.addWidget(btn_clear)
+
+        btn_ok = QPushButton("✔ OK")
+        btn_ok.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLOR_ACCENT};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+                font-weight: bold;
+                min-height: 36px;
+                padding: 0 14px;
+            }}
+            QPushButton:pressed {{ background-color: #1A9C55; }}
+        """)
+        btn_ok.setFocusPolicy(Qt.NoFocus)
+        btn_ok.clicked.connect(dlg.accept)
+        special_row.addWidget(btn_ok)
+
+        btn_cancel = QPushButton("✖")
+        btn_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLOR_ERROR};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+                font-weight: bold;
+                min-height: 36px;
+                padding: 0 10px;
+            }}
+            QPushButton:pressed {{ background-color: #A00; }}
+        """)
+        btn_cancel.setFocusPolicy(Qt.NoFocus)
+        btn_cancel.clicked.connect(dlg.reject)
+        special_row.addWidget(btn_cancel)
+
+        special_row.addStretch()
+        root.addLayout(special_row)
+
+        dlg.adjustSize()
+        # Centre on screen
+        if dlg.parent():
+            geo = dlg.parent().geometry()
+            dlg.move(
+                geo.x() + (geo.width() - dlg.width()) // 2,
+                geo.y() + (geo.height() - dlg.height()) // 2,
+            )
+
+        result = dlg.exec_()
+        return self._text if result == QDialog.Accepted else None
+
+    # ── Key handlers ──────────────────────────────────────────────────────────
+
+    def _press_char(self, ch: str):
+        self._text += ch
+        self._refresh_label()
+
+    def _press_backspace(self):
+        self._text = self._text[:-1]
+        self._refresh_label()
+
+    def _press_clear(self):
+        self._text = ""
+        self._refresh_label()
+
+    def _refresh_label(self):
+        if self._lbl:
+            self._lbl.setText(self._text or " ")
+
+
+class TappableLineEdit(QLineEdit):
+    """QLineEdit that opens VirtualKeyboard when tapped on a touchscreen."""
+
+    def __init__(self, *args, main_window_ref=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._main_window_ref = main_window_ref
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        parent = self._main_window_ref
+        kb = VirtualKeyboard(initial_text=self.text(), parent=parent)
+        result = kb.exec()
+        if result is not None:
+            self.setText(result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Signal bridge: lets the worker thread send data to the GUI thread safely
 # ─────────────────────────────────────────────────────────────────────────────
 class Signals(QObject):
     measurement_ready = pyqtSignal(dict)   # sensor_results dict
     error_occurred    = pyqtSignal(str)    # error message
     init_done         = pyqtSignal(list)   # list[bool] sensor online status
+    log_message       = pyqtSignal(str)    # debug text for on-screen log panel
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GUI log handler — pipes Python logging into the on-screen debug panel
+# ─────────────────────────────────────────────────────────────────────────────
+class GuiLogHandler(logging.Handler):
+    """Logging handler that forwards records to a Qt signal (thread-safe)."""
+
+    def __init__(self, signal):
+        super().__init__()
+        self._signal = signal
+        self.setFormatter(logging.Formatter("%(levelname)s  %(message)s"))
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self._signal.emit(msg)
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -280,10 +512,13 @@ class SensorTile(QFrame):
         )
 
         # Warning text
+        status_text = data.get('status_text', '')
         if fault:
             self.lbl_warn.setText("⚠ GPIO fault")
         elif low:
             self.lbl_warn.setText("⚠ Low water!")
+        elif status != 0 and status_text:
+            self.lbl_warn.setText(f"⚠ {status_text}")
         else:
             self.lbl_warn.setText("")
 
@@ -307,24 +542,30 @@ class MainWindow(QMainWindow):
         self.dl = data_logger
         self.signals = Signals()
 
-        self._globally_running = False   # True once "Start All" has been pressed
+        self._globally_running = False   # True once sensors are connected & running
+        self._sensors_connected = False  # True once init succeeded at least once
         self._worker_thread = None
         self._start_time = None
         self._row_count = 0
         self._sensor_online: list[bool] = [False] * MAX_SENSORS
-        self._num_sensors = MAX_SENSORS  # will be set by the spinner
+        from config import NUM_SENSORS
+        self._num_sensors = NUM_SENSORS  # read from config
 
         self._setup_window()
         self._build_ui()
         self._connect_signals()
+
+        # Install GUI log handler so all log output appears on-screen
+        self._gui_log_handler = GuiLogHandler(self.signals.log_message)
+        logging.getLogger().addHandler(self._gui_log_handler)
 
         # Clock timer
         self._clock_timer = QTimer(self)
         self._clock_timer.timeout.connect(self._tick_clock)
         self._clock_timer.start(1000)
 
-        # Initialise sensors in background (uses current spinner value)
-        threading.Thread(target=self._init_sensors, daemon=True).start()
+        # Do NOT auto-init sensors — wait for user to press Start
+        self._append_log("Ready. Set folder name, sensor count, interval, then press ▶ Start All.")
 
     # ── Window setup ──────────────────────────────────────────────────────────
 
@@ -348,6 +589,7 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self._build_header())
         root.addWidget(self._build_sensor_area(), stretch=1)
+        root.addWidget(self._build_debug_panel())
         root.addWidget(self._build_footer())
 
     # ── Header ────────────────────────────────────────────────────────────────
@@ -365,8 +607,9 @@ class MainWindow(QMainWindow):
         # ── Folder name ──
         lbl_f = QLabel("Folder:")
         lbl_f.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 11px;")
-        self.edit_folder = QLineEdit()
+        self.edit_folder = TappableLineEdit(main_window_ref=self)
         self.edit_folder.setPlaceholderText("session_name")
+        self.edit_folder.setReadOnly(True)   # prevent native keyboard from popping up
         self.edit_folder.setFixedWidth(140)
         self.edit_folder.setStyleSheet(f"""
             QLineEdit {{
@@ -380,23 +623,37 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(6)
 
-        # ── Number of sensors ──
+        # ── Number of sensors (Touch-friendly +/-) ──
         lbl_n = QLabel("Sensors:")
         lbl_n.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 11px;")
-        self.spin_num_sensors = QSpinBox()
-        self.spin_num_sensors.setRange(1, MAX_SENSORS)
-        self.spin_num_sensors.setValue(MAX_SENSORS)
-        self.spin_num_sensors.setFixedWidth(52)
-        self.spin_num_sensors.setStyleSheet(f"""
-            QSpinBox {{
-                background-color: #1E2A3A; color: {COLOR_TEXT};
-                border: 1px solid #3A4A5C; border-radius: 4px;
-                padding: 3px; font-size: 12px;
-            }}
-        """)
-        self.spin_num_sensors.valueChanged.connect(self._on_num_sensors_changed)
         layout.addWidget(lbl_n)
-        layout.addWidget(self.spin_num_sensors)
+
+        _btn_css = f"""
+            QPushButton {{
+                background-color: #2C3E50; color: {COLOR_TEXT};
+                border: 1px solid #3A4A5C; border-radius: 4px;
+                font-size: 16px; font-weight: bold; min-width: 28px;
+            }}
+            QPushButton:pressed {{ background-color: #3A4A5C; }}
+        """
+
+        self.btn_sensor_minus = QPushButton("−")
+        self.btn_sensor_minus.setFixedSize(28, 24)
+        self.btn_sensor_minus.setStyleSheet(_btn_css)
+        self.btn_sensor_minus.clicked.connect(self._on_sensor_minus)
+        layout.addWidget(self.btn_sensor_minus)
+
+        self.lbl_num_sensors = QLabel(str(self._num_sensors))
+        self.lbl_num_sensors.setAlignment(Qt.AlignCenter)
+        self.lbl_num_sensors.setFixedWidth(20)
+        self.lbl_num_sensors.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 12px; font-weight: bold;")
+        layout.addWidget(self.lbl_num_sensors)
+
+        self.btn_sensor_plus = QPushButton("+")
+        self.btn_sensor_plus.setFixedSize(28, 24)
+        self.btn_sensor_plus.setStyleSheet(_btn_css)
+        self.btn_sensor_plus.clicked.connect(self._on_sensor_plus)
+        layout.addWidget(self.btn_sensor_plus)
 
         layout.addSpacing(6)
 
@@ -426,7 +683,7 @@ class MainWindow(QMainWindow):
         # ── Global Start All / Stop All ──
         self.btn_global = QPushButton("▶  Start All")
         self.btn_global.setFixedSize(120, 38)
-        self.btn_global.setEnabled(False)
+        self.btn_global.setEnabled(True)   # always enabled; init happens on press
         self.btn_global.setStyleSheet(self._btn_style(COLOR_START_BTN))
         self.btn_global.clicked.connect(self._on_global_toggle)
         layout.addWidget(self.btn_global)
@@ -436,9 +693,9 @@ class MainWindow(QMainWindow):
         # ── Status + battery ──
         right = QVBoxLayout()
         right.setSpacing(2)
-        self.lbl_init_status = QLabel("Initialising sensors…")
+        self.lbl_init_status = QLabel("⏳ Press ▶ Start All to connect sensors")
         self.lbl_init_status.setStyleSheet(
-            f"color: {COLOR_WARNING}; font-size: 10px;"
+            f"color: {COLOR_TEXT_DIM}; font-size: 10px;"
         )
         self.lbl_battery = QLabel("🔋 ---%")
         self.lbl_battery.setStyleSheet(
@@ -546,27 +803,79 @@ class MainWindow(QMainWindow):
         self.signals.measurement_ready.connect(self._on_measurement)
         self.signals.error_occurred.connect(self._on_error)
         self.signals.init_done.connect(self._on_init_done)
+        self.signals.log_message.connect(self._append_log)
 
     # ── Sensor count changed ──────────────────────────────────────────────────
 
-    def _on_num_sensors_changed(self, value: int):
+    def _on_sensor_minus(self):
         if self._globally_running:
-            # Don't allow changing sensor count mid-session
-            self.spin_num_sensors.blockSignals(True)
-            self.spin_num_sensors.setValue(self._num_sensors)
-            self.spin_num_sensors.blockSignals(False)
-            return
-        self._num_sensors = value
+            return  # block changes mid-session
+        if self._num_sensors > 1:
+            self._num_sensors -= 1
+            self.lbl_num_sensors.setText(str(self._num_sensors))
+            self._on_num_sensors_changed(self._num_sensors)
+
+    def _on_sensor_plus(self):
+        if self._globally_running:
+            return  # block changes mid-session
+        if self._num_sensors < MAX_SENSORS:
+            self._num_sensors += 1
+            self.lbl_num_sensors.setText(str(self._num_sensors))
+            self._on_num_sensors_changed(self._num_sensors)
+
+    def _on_num_sensors_changed(self, value: int):
         self._refresh_tile_visibility()
 
-    # ── Sensor initialisation (runs in thread) ────────────────────────────────
+    # ── Sensor initialisation (runs in thread) ────────────────────────────────────
 
     def _init_sensors(self):
+        """Initialise sensors with live progress sent back to the GUI log panel."""
+        def _cb(msg: str):
+            self.signals.log_message.emit(msg)
+
         try:
-            online = self.sm.initialise(num_sensors=self._num_sensors)
+            online = self.sm.initialise(
+                num_sensors=self._num_sensors,
+                progress_cb=_cb,
+            )
             self.signals.init_done.emit(online)
         except Exception as e:
-            self.signals.error_occurred.emit(f"Init failed: {e}")
+            self.signals.log_message.emit(f"ERROR during init: {e}")
+            self.signals.init_done.emit([])
+
+    # ── Debug log panel helpers ─────────────────────────────────────────────────
+
+    def _build_debug_panel(self) -> QWidget:
+        """Build the collapsible on-screen debug log panel."""
+        from PyQt5.QtWidgets import QPlainTextEdit
+        panel = QFrame()
+        panel.setFixedHeight(94)
+        panel.setStyleSheet(
+            f"background-color: #11181F; border-top: 1px solid #2A3A4A;"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(0)
+
+        self._log_view = QPlainTextEdit()
+        self._log_view.setReadOnly(True)
+        self._log_view.setFixedHeight(90)
+        self._log_view.setStyleSheet(
+            f"background-color: #11181F; color: #7EC8A0;"
+            f"font-family: monospace; font-size: 11px; border: none;"
+        )
+        self._log_view.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        layout.addWidget(self._log_view)
+        return panel
+
+    def _append_log(self, msg: str):
+        """Append a line to the on-screen log (called from GUI thread)."""
+        if hasattr(self, '_log_view'):
+            self._log_view.appendPlainText(msg)
+            # Auto-scroll to bottom
+            sb = self._log_view.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -574,7 +883,9 @@ class MainWindow(QMainWindow):
         self._sensor_online = online + [False] * (MAX_SENSORS - len(online))
         count = sum(online)
         total = len(online)
-        self.lbl_init_status.setText(f"✓ {count}/{total} sensors online")
+        self._sensors_connected = count > 0
+        status_text = f"✓ {count}/{total} sensors online"
+        self.lbl_init_status.setText(status_text)
         self.lbl_init_status.setStyleSheet(
             f"color: {COLOR_OK if count == total else COLOR_WARNING}; font-size: 10px;"
         )
@@ -584,26 +895,57 @@ class MainWindow(QMainWindow):
             else:
                 tile.set_online(False)
 
-        self.btn_global.setEnabled(count > 0)
+        if count > 0:
+            # Sensors are up — proceed directly into the session
+            self._launch_session()
+        else:
+            # Nothing online — re-enable the button so user can retry
+            self.btn_global.setText("▶  Start All")
+            self.btn_global.setStyleSheet(self._btn_style(COLOR_START_BTN))
+            self.btn_global.setEnabled(True)
+            self.combo_interval.setEnabled(True)
+            self.btn_sensor_minus.setEnabled(True)
+            self.btn_sensor_plus.setEnabled(True)
+            self.edit_folder.setEnabled(True)
+            self._append_log("⚠ No sensors detected. Check wiring and press Start All to retry.")
 
     def _on_global_toggle(self):
         if not self._globally_running:
-            self._start_session()
+            # Disable controls and start async init+connect
+            self.btn_global.setText("⏳ Connecting…")
+            self.btn_global.setEnabled(False)
+            self.btn_global.setStyleSheet(self._btn_style(COLOR_TEXT_DIM))
+            self.combo_interval.setEnabled(False)
+            self.btn_sensor_minus.setEnabled(False)
+            self.btn_sensor_plus.setEnabled(False)
+            self.edit_folder.setEnabled(False)
+            self.lbl_init_status.setText("⏳ Scanning I2C & connecting sensors…")
+            self.lbl_init_status.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 10px;")
+            threading.Thread(target=self._init_sensors, daemon=True).start()
         else:
             self._stop_session()
 
-    def _start_session(self):
+    def _launch_session(self):
+        """Start the measurement session (called after sensors are confirmed online)."""
         folder = self.edit_folder.text().strip() or "session"
         tensions = [t.tension_cmH2O for t in self.tiles]
         self.dl.set_tensions(tensions)
         try:
             filepath = self.dl.start_session(folder, self._num_sensors)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Cannot create session file:\n{e}")
+            self._append_log(f"ERROR: Cannot create session file: {e}")
+            self.btn_global.setText("▶  Start All")
+            self.btn_global.setStyleSheet(self._btn_style(COLOR_START_BTN))
+            self.btn_global.setEnabled(True)
+            self.combo_interval.setEnabled(True)
+            self.btn_sensor_minus.setEnabled(True)
+            self.btn_sensor_plus.setEnabled(True)
+            self.edit_folder.setEnabled(True)
             return
 
         short = filepath.split("/")[-1]
         self.lbl_file.setText(short)
+        self._append_log(f"Session file: {filepath}")
 
         self._globally_running = True
         self._start_time = datetime.now()
@@ -615,29 +957,40 @@ class MainWindow(QMainWindow):
 
         self.btn_global.setText("■  Stop All")
         self.btn_global.setStyleSheet(self._btn_style(COLOR_STOP_BTN))
-        self.combo_interval.setEnabled(False)
-        self.spin_num_sensors.setEnabled(False)
-        self.edit_folder.setEnabled(False)
+        self.btn_global.setEnabled(True)
 
         interval = self.combo_interval.currentData()
+        self._append_log(f"Measurement started — interval {interval}s")
         self._worker_thread = threading.Thread(
             target=self._measurement_loop, args=(interval,), daemon=True
         )
         self._worker_thread.start()
 
+    def _start_session(self):
+        """Legacy alias kept for safety (not used in main flow any more)."""
+        self._launch_session()
+
+
     def _stop_session(self):
         self._globally_running = False
+        self._sensors_connected = False
         self.dl.stop_session()
 
         for tile in self.tiles:
             tile.set_globally_started(False)
+            tile.set_offline()   # reset tile UI to idle state
 
         self.btn_global.setText("▶  Start All")
         self.btn_global.setStyleSheet(self._btn_style(COLOR_START_BTN))
+        self.btn_global.setEnabled(True)
         self.combo_interval.setEnabled(True)
-        self.spin_num_sensors.setEnabled(True)
+        self.btn_sensor_minus.setEnabled(True)
+        self.btn_sensor_plus.setEnabled(True)
         self.edit_folder.setEnabled(True)
         self.lbl_file.setText("Session saved")
+        self.lbl_init_status.setText("⏳ Press ▶ Start All to connect sensors")
+        self.lbl_init_status.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 10px;")
+        self._append_log("Session stopped. Sensors disconnected.")
 
     def _on_tile_toggled(self, idx: int, is_running: bool):
         """
@@ -669,8 +1022,9 @@ class MainWindow(QMainWindow):
         self.lbl_warnings.setText("  ".join(warnings))
 
     def _on_error(self, msg: str):
+        """Displays error internally instead of generic popups."""
         log.error(msg)
-        QMessageBox.critical(self, "Error", msg)
+        self.signals.log_message.emit(f"ERROR: {msg}")
 
     # ── Measurement worker (background thread) ────────────────────────────────
 
@@ -693,7 +1047,7 @@ class MainWindow(QMainWindow):
                 self.dl.write_row(results, active_sensors=active)
                 self.signals.measurement_ready.emit(results)
             except Exception as e:
-                self.signals.error_occurred.emit(str(e))
+                self.signals.log_message.emit(f"Measurement error: {e}")
 
             elapsed = time.monotonic() - t0
             remaining = interval - elapsed

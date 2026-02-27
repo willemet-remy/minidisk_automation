@@ -2,11 +2,19 @@
 # main.py — Infiltrometer Controller entry point
 
 import logging
+import os
 import sys
+
+# ── Qt platform detection ─────────────────────────────────────────────────────
+# On the Pi, if no X display is available (e.g. booted to console or SSH),
+# fall back to the Linux framebuffer directly.  The service file sets DISPLAY=:0
+# when a graphical session is active; otherwise we choose linuxfb automatically.
+if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+    os.environ.setdefault("QT_QPA_PLATFORM", "linuxfb")
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
     handlers=[
         logging.FileHandler("/home/remy/infiltrometer.log"),
@@ -24,6 +32,8 @@ from gui import launch_gui
 def main():
     log.info("═" * 60)
     log.info("Infiltrometer Controller starting")
+    log.info(f"Qt platform: {os.environ.get('QT_QPA_PLATFORM', 'xcb (default)')}")
+    log.info(f"DISPLAY: {os.environ.get('DISPLAY', '(not set)')}")
     log.info("═" * 60)
 
     sensor_manager = SensorManager()
