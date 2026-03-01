@@ -21,13 +21,14 @@ import logging
 import threading
 import time
 from datetime import datetime
+from collections import deque
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QColor, QPalette
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QComboBox, QSpinBox, QLineEdit, QDialog,
-    QGridLayout, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QVBoxLayout, QHBoxLayout, QFormLayout, QDialogButtonBox,
     QFrame, QSizePolicy, QMessageBox
 )
 
@@ -302,6 +303,7 @@ class SensorTile(QFrame):
         self._running = False   # local running state for this tile
         self._online = False
         self._tension_value: float = 0.0   # cmH2O, set via +/- buttons
+        self._history = deque()
         self._setup_ui()
 
     # ── Build ─────────────────────────────────────────────────────────────────
@@ -321,12 +323,22 @@ class SensorTile(QFrame):
         self.lbl_name.setStyleSheet(
             f"color: {COLOR_TEXT_DIM}; font-size: 11px; font-weight: bold; border: none;"
         )
+        self.lbl_steady = QLabel("●")
+        self.lbl_steady.setStyleSheet("color: #AAAAAA; font-size: 14px; border: none;")
+        self.lbl_steady.setToolTip("Steady State Indicator (Green = Steady, Red = Shifting)")
+        
         self.lbl_status = QLabel("●")
         self.lbl_status.setStyleSheet("color: #555; font-size: 14px; border: none;")
+        
         header.addWidget(self.lbl_name)
         header.addStretch()
+        header.addWidget(QLabel("Steady: "))
+        header.addWidget(self.lbl_steady)
+        header.addSpacing(10)
+        header.addWidget(QLabel("State: "))
         header.addWidget(self.lbl_status)
         layout.addLayout(header)
+
 
         # ── Distance reading ──
         self.lbl_distance = QLabel("---")
@@ -500,13 +512,36 @@ class SensorTile(QFrame):
             f"color: {dot_color}; font-size: 14px; border: none;"
         )
 
-        # Distance value
+        # Distance value and Steady State calculation
         if dist is not None:
             self.lbl_distance.setText(str(dist))
             dist_color = COLOR_WARNING if low else COLOR_TEXT
+            
+            # Steady state tracking
+            from config import STEADY_STATE_WINDOW_S, STEADY_STATE_TOLERANCE_MM
+            now = time.time()
+            self._history.append((now, dist))
+            
+            # Prune old readings outside the window
+            while self._history and now - self._history[0][0] > STEADY_STATE_WINDOW_S:
+                self._history.popleft()
+            
+            # We must have at least enough data spanning > 50% of the window to judge
+            if len(self._history) > 2 and (now - self._history[0][0]) >= (STEADY_STATE_WINDOW_S / 2.0):
+                dists = [h[1] for h in self._history]
+                shift = max(dists) - min(dists)
+                if shift <= STEADY_STATE_TOLERANCE_MM:
+                    self.lbl_steady.setStyleSheet(f"color: {COLOR_OK}; font-size: 14px; border: none;")
+                else:
+                    self.lbl_steady.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; border: none;")
+            else:
+                self.lbl_steady.setStyleSheet("color: #AAAAAA; font-size: 14px; border: none;")
+                
         else:
             self.lbl_distance.setText("ERR")
             dist_color = COLOR_ERROR
+            self.lbl_steady.setStyleSheet("color: #AAAAAA; font-size: 14px; border: none;")
+            
         self.lbl_distance.setStyleSheet(
             f"color: {dist_color}; font-size: 22px; font-weight: bold; border: none;"
         )
@@ -529,6 +564,55 @@ class SensorTile(QFrame):
     @property
     def is_running(self) -> bool:
         return self._running
+
+
+class CalibrationDialog(QDialog):
+    def __init__(self, parent=None, active_sensors=None):
+        super().__init__(parent)
+        self.setWindowTitle("Calibrate Sensor")
+        self.setFixedSize(300, 200)
+        self.setStyleSheet(f"background-color: {COLOR_BG}; color: {COLOR_TEXT};")
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        title = QLabel("Sensor Calibration")
+        title.setStyleSheet(f"color: {COLOR_ACCENT}; font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+        
+        form = QFormLayout()
+        self.combo_sensor = QComboBox()
+        self.combo_sensor.setStyleSheet(f"background-color: {COLOR_PANEL}; color: {COLOR_TEXT}; padding: 4px;")
+        
+        if active_sensors:
+            for idx in active_sensors:
+                self.combo_sensor.addItem(f"Sensor {idx + 1}", idx)
+        
+        self.spin_dist = QSpinBox()
+        self.spin_dist.setRange(50, 1000)
+        self.spin_dist.setValue(100)
+        self.spin_dist.setSuffix(" mm")
+        self.spin_dist.setStyleSheet(f"background-color: {COLOR_PANEL}; color: {COLOR_TEXT}; padding: 4px;")
+        
+        form.addRow("Target Sensor:", self.combo_sensor)
+        form.addRow("True Distance:", self.spin_dist)
+        layout.addLayout(form)
+        
+        self.lbl_status = QLabel("Place sensor on plexiglass\nover 17% white target.")
+        self.lbl_status.setStyleSheet("color: #AAAAAA; font-size: 10px; font-style: italic;")
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_status)
+        
+        bbox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bbox.button(QDialogButtonBox.Ok).setText("Run Calibration")
+        bbox.setStyleSheet(f"QPushButton {{ background-color: {COLOR_PANEL}; color: {COLOR_TEXT}; padding: 6px; border-radius: 4px; border: 1px solid #3A4A5C; }}")
+        bbox.accepted.connect(self.accept)
+        bbox.rejected.connect(self.reject)
+        layout.addWidget(bbox)
+
+    def get_data(self):
+        return self.combo_sensor.currentData(), self.spin_dist.value()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -992,6 +1076,33 @@ class MainWindow(QMainWindow):
         self.lbl_init_status.setText("⏳ Press ▶ Start All to connect sensors")
         self.lbl_init_status.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 10px;")
         self._append_log("Session stopped. Sensors disconnected.")
+
+    def _on_calibrate(self):
+        if self._globally_running:
+            QMessageBox.warning(self, "Error", "Cannot calibrate while a measurement session is running! Please click Stop All first.")
+            return
+
+        active_sensors = [i for i, s in enumerate(self._sensor_online) if s]
+        if not active_sensors:
+            QMessageBox.warning(self, "Error", "No sensors are currently online to calibrate. Please press 'Start All' so the system connects to them first, then Stop it to calibrate.")
+            return
+
+        dlg = CalibrationDialog(self, active_sensors)
+        if dlg.exec_() == QDialog.Accepted:
+            sensor_idx, dist_mm = dlg.get_data()
+            if sensor_idx is not None:
+                self._append_log(f"🔧 Calibrating Sensor {sensor_idx+1} at {dist_mm} mm... (Takes ~5s)")
+                QApplication.processEvents() # Force GUI update before blocking operation
+                
+                try:
+                    res = self.sm.run_calibration(sensor_idx, dist_mm)
+                    self._append_log(f"  ✓ S{sensor_idx+1} Calibrated! Offset={res['result_offset_mm']}mm, Xtalk={res['result_xtalk_kcps']/1000.0:.1f}kcps")
+                    self.lbl_init_status.setText(f"✓ Sensor {sensor_idx+1} calibrated")
+                    self.lbl_init_status.setStyleSheet(f"color: {COLOR_OK}; font-size: 10px;")
+                except Exception as e:
+                    self._append_log(f"  ✗ Calibration failed: {e}")
+                    self.lbl_init_status.setText(f"✗ Calibration Failed")
+                    self.lbl_init_status.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 10px;")
 
     def _on_tile_toggled(self, idx: int, is_running: bool):
         """

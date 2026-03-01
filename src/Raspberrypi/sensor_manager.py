@@ -177,7 +177,6 @@ class VL53L4CD_Raw:
 
     def get_distance(self) -> tuple[int, int]:
         """Returns (distance_mm, range_status).  range_status 0 = valid."""
-        # Poll up to 500 ms for data (was 200 ms — safer for 50 ms budget)
         for _ in range(500):
             if self.data_ready():
                 break
@@ -187,10 +186,77 @@ class VL53L4CD_Raw:
         status   = result[0]
         distance = (result[self._RESULT_DISTANCE_OFFSET] << 8) | result[self._RESULT_DISTANCE_OFFSET + 1]
 
-        # Clear interrupt so next measurement can proceed
         self._write_byte(self._REG_RESULT_CLEAR, 0x01)
-
         return distance, status
+
+    def get_full_result(self) -> tuple[int, float, float, int]:
+        """Returns distance_mm, spad_nb, signal_kcps, status for calibration use."""
+        for _ in range(500):
+            if self.data_ready():
+                break
+            time.sleep(0.001)
+
+        result   = self._read_bytes(self._REG_RESULT_BLOCK_START, 17)
+        status   = result[0]
+        spad_nb  = ((result[3] << 8) | result[4]) / 256.0
+        signal   = ((result[5] << 8) | result[6]) * 8.0
+        distance = (result[13] << 8) | result[14]
+
+        self._write_byte(self._REG_RESULT_CLEAR, 0x01)
+        return distance, max(0.01, spad_nb), signal, status
+
+    def calibrate_offset(self, target_dist_mm: int, nb_samples: int = 50) -> int:
+        """Calculates and applies offset. Returns the offset in mm."""
+        self._write_word(0x001E, 0x0000) # RANGE_OFFSET_MM
+        self._write_word(0x0020, 0x0000) # INNER_OFFSET_MM
+        self._write_word(0x0022, 0x0000) # OUTER_OFFSET_MM
+        
+        self.start_ranging()
+        for _ in range(10):  # Heat loop
+            self.get_full_result()
+        self.stop_ranging()
+
+        self.start_ranging()
+        avg_dist = 0.0
+        for _ in range(nb_samples):
+            dist, _, _, _ = self.get_full_result()
+            avg_dist += dist
+        self.stop_ranging()
+
+        avg_dist /= nb_samples
+        offset_mm = target_dist_mm - avg_dist
+        offset_reg_val = int(offset_mm * 4) & 0xFFFF
+        
+        self._write_word(0x001E, offset_reg_val)
+        return int(offset_mm)
+
+    def calibrate_xtalk(self, target_dist_mm: int, nb_samples: int = 50) -> int:
+        """Calculates and applies crosstalk. Returns measured xtalk in kcps."""
+        self.start_ranging()
+        for _ in range(10):  # Heat loop
+            self.get_full_result()
+        self.stop_ranging()
+
+        self.start_ranging()
+        avg_dist = 0.0
+        avg_spad = 0.0
+        avg_signal = 0.0
+        for _ in range(nb_samples):
+            dist, spad, signal, _ = self.get_full_result()
+            avg_dist += dist
+            avg_spad += spad
+            avg_signal += signal
+        self.stop_ranging()
+
+        avg_dist /= nb_samples
+        avg_spad /= nb_samples
+        avg_signal /= nb_samples
+
+        tmp_xtalk = 512.0 * (avg_signal * (1.0 - (avg_dist / target_dist_mm))) / avg_spad
+        cal_xtalk = int(tmp_xtalk) & 0xFFFF
+        
+        self._write_word(0x0016, cal_xtalk) # XTALK_PLANE_OFFSET_KCPS
+        return (cal_xtalk * 1000) >> 9
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -253,6 +319,27 @@ class SensorManager:
         self.sensors: list = [None] * self._num_sensors
         self._xshut_state: int = 0x00
         self._mcp_available: bool = False   # set True in initialise() if MCP found
+        
+        self._calibration_file = "/home/remy/infiltrometer/calibration.json"
+        self._calibrations = self._load_calibrations()
+
+    def _load_calibrations(self) -> dict:
+        import json, os
+        if os.path.exists(self._calibration_file):
+            try:
+                with open(self._calibration_file, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                log.error(f"Failed to load calibrations: {e}")
+        return {}
+
+    def _save_calibrations(self):
+        import json
+        try:
+            with open(self._calibration_file, "w") as f:
+                json.dump(self._calibrations, f, indent=4)
+        except Exception as e:
+            log.error(f"Failed to save calibrations: {e}")
 
     # ── MCP23017 helpers ──────────────────────────────────────────────────────
 
@@ -487,6 +574,14 @@ class SensorManager:
             # Run init sequence and start ranging
             cb(f"  [S{idx}] Running init sequence at 0x{target_addr:02X} …")
             sensor.init()
+
+            # Apply calibration if available
+            calib = self._calibrations.get(str(idx))
+            if calib and not USE_ST_DRIVER:
+                cb(f"  [S{idx}] Applying saved calibration (Offset={calib['result_offset_mm']}mm, Xtalk={calib['result_xtalk_kcps']/1000.0:.1f}kcps)")
+                sensor._write_word(0x001E, calib["offset_reg"])
+                sensor._write_word(0x0016, calib["xtalk_reg"])
+
             time.sleep(self._POST_INIT_WAIT_S)
 
             cb(f"  [S{idx}] Starting ranging …")
@@ -512,6 +607,43 @@ class SensorManager:
             time.sleep(self._XSHUT_DISABLE_WAIT_S)
             self.sensors[idx] = None
             return False
+
+    def run_calibration(self, sensor_idx: int, target_dist_mm: int, nb_samples: int = 50) -> dict:
+        """Runs calibration for a single sensor and saves to file."""
+        if sensor_idx < 0 or sensor_idx >= len(self.sensors) or self.sensors[sensor_idx] is None:
+            raise ValueError(f"Sensor {sensor_idx + 1} is not active")
+        if USE_ST_DRIVER:
+            raise RuntimeError("Calibration protocol not available in ST driver wrapper.")
+            
+        sensor = self.sensors[sensor_idx]
+        
+        log.info(f"  [S{sensor_idx}] Running OFFSET calibration ({nb_samples} samples) at {target_dist_mm} mm...")
+        offset_mm = sensor.calibrate_offset(target_dist_mm, nb_samples)
+        
+        log.info(f"  [S{sensor_idx}] Running XTALK calibration ({nb_samples} samples) at {target_dist_mm} mm...")
+        xtalk_kcps = sensor.calibrate_xtalk(target_dist_mm, nb_samples)
+        
+        # Read exact register values to save
+        offset_reg = sensor._read_bytes(0x001E, 2)
+        offset_val = (offset_reg[0] << 8) | offset_reg[1]
+        
+        xtalk_reg = sensor._read_bytes(0x0016, 2)
+        xtalk_val = (xtalk_reg[0] << 8) | xtalk_reg[1]
+        
+        # Save to dict
+        self._calibrations[str(sensor_idx)] = {
+            "offset_reg": offset_val,
+            "xtalk_reg": xtalk_val,
+            "target_mm": target_dist_mm,
+            "result_offset_mm": offset_mm,
+            "result_xtalk_kcps": xtalk_kcps
+        }
+        self._save_calibrations()
+        log.info(f"  [S{sensor_idx}] Calibration saved! Offset: {offset_mm}mm, Xtalk: {xtalk_kcps/1000.0:.1f}kcps")
+        
+        # Restart ranging after calibration
+        sensor.start_ranging()
+        return self._calibrations[str(sensor_idx)]
 
     # ── Reading ───────────────────────────────────────────────────────────────
 

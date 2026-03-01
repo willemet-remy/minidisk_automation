@@ -37,6 +37,10 @@ DEFAULT_INTERVAL = 5   # seconds
 # Distance threshold (mm) below which a sensor raises a "low water" warning
 LOW_WATER_THRESHOLD_MM = 400
 
+# Steady State Detection
+STEADY_STATE_WINDOW_S = 30
+STEADY_STATE_TOLERANCE_MM = 1.0
+
 # ── Data logging ──────────────────────────────────────────────────────────────
 USB_MOUNT_PATH = "/media/remy"       # RPi OS auto-mounts USB sticks here
 FALLBACK_DATA_DIR = "/home/remy/infiltrometer_data"
