@@ -547,6 +547,7 @@ class MainWindow(QMainWindow):
         self._worker_thread = None
         self._start_time = None
         self._row_count = 0
+        self._battery_tick = 30  # Counter for 30s battery update interval
         self._sensor_online: list[bool] = [False] * MAX_SENSORS
         from config import NUM_SENSORS
         self._num_sensors = NUM_SENSORS  # read from config
@@ -1062,23 +1063,32 @@ class MainWindow(QMainWindow):
             h, rem = divmod(int(delta.total_seconds()), 3600)
             m, s = divmod(rem, 60)
             self.lbl_elapsed.setText(f"Elapsed: {h:02d}:{m:02d}:{s:02d}")
-        self._update_battery()
+        
+        # Only update battery every 30 seconds to minimize I2C traffic
+        self._battery_tick += 1
+        if self._battery_tick >= 30:
+            self._update_battery()
+            self._battery_tick = 0
 
     def _update_battery(self):
         try:
-            from pijuice import PiJuice
-            if not hasattr(self, '_pijuice'):
-                self._pijuice = PiJuice(1, 0x14)
-            level = self._pijuice.status.GetChargeLevel()
-            if level.get('error') == 'NO_ERROR':
-                pct = level['data']
-                self.lbl_battery.setText(f"🔋 {pct}%")
-                color = (
-                    COLOR_OK if pct > 20
-                    else COLOR_WARNING if pct > 10
-                    else COLOR_ERROR
-                )
-                self.lbl_battery.setStyleSheet(f"color: {color}; font-size: 10px;")
+            from INA219 import INA219
+            from config import INA219_ADDR
+            if not hasattr(self, '_ina219'):
+                self._ina219 = INA219(addr=INA219_ADDR)
+            
+            bus_voltage = self._ina219.getBusVoltage_V()
+            # Formula from INA219.py example: (V - 3) / 1.2 * 100
+            pct = (bus_voltage - 3) / 1.2 * 100
+            pct = max(0, min(100, pct))
+            
+            self.lbl_battery.setText(f"🔋 {pct:3.1f}%")
+            color = (
+                COLOR_OK if pct > 20
+                else COLOR_WARNING if pct > 10
+                else COLOR_ERROR
+            )
+            self.lbl_battery.setStyleSheet(f"color: {color}; font-size: 10px;")
         except Exception:
             pass
 

@@ -6,6 +6,9 @@ I2C_BUS = 1                        # /dev/i2c-1 on all modern RPi
 # MCP23017 I2C address (A0=A1=A2=GND → 0x20)
 MCP23017_ADDR = 0x20
 
+# INA219 battery monitor address
+INA219_ADDR = 0x43
+
 # VL53L4CD base address (factory default)
 VL53L4CD_DEFAULT_ADDR = 0x29
 

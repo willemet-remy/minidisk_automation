@@ -39,7 +39,7 @@ chmod +x "$DEST/main.py"
 if [ ! -d "$DEST/venv" ]; then
     python3 -m venv "$DEST/venv"
 fi
-"$DEST/venv/bin/pip" install smbus2 vl53l4cd pijuice
+"$DEST/venv/bin/pip" install smbus2 vl53l4cd
 
 # ── 5. Autostart on boot (via systemd, not cron, so GUI has display access) ──
 SERVICE_FILE=/etc/systemd/system/infiltrometer.service
