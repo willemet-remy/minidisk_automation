@@ -16,7 +16,7 @@ Measurements are logged to CSV on a USB stick.
 | Waveshare 7" Control Panel for Raspberry Pi 4 | User interface | 1 |
 | VL53L4CD breakout | Distance sensor | 8 |
 | MCP23017-E/SP (DIP-28) | XSHUT + GPIO1 I/O expander | 1 |
-| Waveshare UPS Hat (C) for Raspberry Pi Zero 5V | LiPo power management + UPS | 1 |
+| INA219 | Battery Voltage/Current I2C Monitor | 1 |
 | LiPo 3.7V ≥ 5000 mAh | Battery | 1 |
 | 4.7 kΩ resistor | I2C SDA/SCL pull-ups | 2 |
 | 10 kΩ resistor | XSHUT pull-downs | 8 |
@@ -109,9 +109,9 @@ GPIO1 → MCP23017 GPB[n]
 
 1. Flash Raspberry Pi OS **with Desktop** (Bookworm 64-bit) to SD card.
 2. Boot, connect to network briefly (for apt).
-3. Copy the infiltrometer folder to the Pi.
-scp -r /home/remy/Documents/minidisk_automation/src/Raspberrypi remy@raspberrypi_ip:/Documents/minidisk
-4. Run:
+3. Copy the infiltrometer folder to the Pi:
+   `scp -r /home/remy/Documents/minidisk_automation/src/Raspberrypi remy@raspberrypi_ip:/Documents/minidisk`
+4. Run the setup script to create a local virtual environment (`venv`) and install dependencies:
    ```bash
    cd /path/to/infiltrometer
    bash setup.sh
@@ -128,10 +128,12 @@ After reboot, the GUI launches automatically on the touchscreen.
 infiltrometer/
 ├── main.py            Entry point
 ├── config.py          All constants (addresses, thresholds, colours)
-├── sensor_manager.py  MCP23017 + VL53L4CD driver
+├── sensor_manager.py  MCP23017 + VL53L4CD driver + Calibration Logic
 ├── data_logger.py     CSV logging to USB stick
-├── gui.py             PyQt5 GUI
-└── setup.sh           Installation script
+├── gui.py             PyQt5 GUI (Measurement & Calibration Dialog)
+├── INA219.py          I2C Battery Monitor driver
+├── calibration.json   Saved Offset and Xtalk profiles (Auto-generated)
+└── setup.sh           Installation script (venv + systemd)
 ```
 
 ---
@@ -159,7 +161,7 @@ timestamp, sensor_0_mm, ..., sensor_7_mm, tension_0_hPa, ..., tension_7_hPa, fau
 | Sensor not detected | Check XSHUT 10kΩ pull-down, verify SDA/SCL connections |
 | All sensors fail init | Check I2C enabled (`i2cdetect -y 1`), check 4.7kΩ pull-ups |
 | USB stick not found | Check `/media/pi/` for mount, try different USB stick |
-| Battery % not showing | Check PiJuice HAT is seated on GPIO header |
+| Battery % not showing | Check INA219 wiring to I2C and `0x43` address |
 | GUI not starting | `journalctl -u infiltrometer -f` for logs |
 
 ---
@@ -168,8 +170,18 @@ timestamp, sensor_0_mm, ..., sensor_7_mm, tension_0_hPa, ..., tension_7_hPa, fau
 
 | Parameter | Default | Description |
 |---|---|---|
-| `LOW_WATER_THRESHOLD_MM` | 20 | Trigger low water warning below this distance |
-| `MEASUREMENT_INTERVALS` | [1,2,5,10,30,60] | Available intervals in GUI dropdown |
+| `LOW_WATER_THRESHOLD_MM` | 400 | Trigger low water warning below this distance |
+| `MEASUREMENT_INTERVALS` | [1,2,5,10,30,60,300] | Available intervals in GUI dropdown |
 | `DEFAULT_INTERVAL` | 5 | Default measurement interval (seconds) |
-| `USB_MOUNT_PATH` | /media/pi | Where USB sticks are mounted |
-| `GRAPH_HISTORY` | 120 | Data points in live graph |
+| `STEADY_STATE_WINDOW_S` | 30 | Seconds to test for distance shift |
+| `STEADY_STATE_TOLERANCE_MM` | 1.0 | Allowed mm of shift to show steady state (Green dot) |
+
+---
+
+## VL53L4CD Calibration Protocol
+For accurate readings through 2mm plexiglass against a 17% white reflecting target:
+1. Hit **Start All** to verify the sensors connect, then hit **Stop All**.
+2. Click **[🔧 Calibrate]** in the GUI.
+3. Select your physical sensor (Sensor 1 - 8) and input the true distance from the sensor to the target.
+4. The system calculates and saves the `Offset` and `Xtalk` compensation to `calibration.json`.
+5. These profiles are automatically applied on every startup!

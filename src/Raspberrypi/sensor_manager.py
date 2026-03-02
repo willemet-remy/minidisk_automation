@@ -355,23 +355,23 @@ class SensorManager:
             log.warning("  [MCP] MCP23017 not available — skipping XSHUT setup.")
             log.warning("  [MCP] Sensors must have XSHUT tied high (pull-up). Only 1 sensor supported in this mode.")
             return
-        log.debug("  [MCP] Setting IODIRA=0xFF (all port A = input) …")
-        self._mcp_write(MCP_IODIRA, 0xFF)   # port A = inputs (GPIO1 lines)
-        log.debug("  [MCP] Setting IODIRB=0x00 (all port B = output) …")
-        self._mcp_write(MCP_IODIRB, 0x00)   # port B = outputs (XSHUT lines)
-        log.debug("  [MCP] Enabling pull-ups on port A (GPIO1 open-drain) …")
-        self._mcp_write(MCP_GPPUA,  0xFF)   # pull-ups on GPIO1 inputs
-        log.debug("  [MCP] Disabling pull-ups on port B (XSHUT driven) …")
-        self._mcp_write(MCP_GPPUB,  0x00)   # no pull-ups on XSHUT
+        log.debug("  [MCP] Setting IODIRA=0x00 (all port A = output) …")
+        self._mcp_write(MCP_IODIRA, 0x00)   # port A = outputs (XSHUT lines)
+        log.debug("  [MCP] Setting IODIRB=0xFF (all port B = input) …")
+        self._mcp_write(MCP_IODIRB, 0xFF)   # port B = inputs (GPIO1 lines)
+        log.debug("  [MCP] Disabling pull-ups on port A (XSHUT driven) …")
+        self._mcp_write(MCP_GPPUA,  0x00)   # no pull-ups on XSHUT
+        log.debug("  [MCP] Enabling pull-ups on port B (GPIO1 open-drain) …")
+        self._mcp_write(MCP_GPPUB,  0xFF)   # pull-ups on GPIO1 inputs
         self._set_xshut(0x00)               # all XSHUT lines low = all sensors off
-        log.info("  [MCP] MCP23017 configured (port B=XSHUT outputs, port A=GPIO1 inputs)")
+        log.info("  [MCP] MCP23017 configured (port A=XSHUT outputs, port B=GPIO1 inputs)")
 
     def _set_xshut(self, mask: int):
         """Set MCP port A output latch. Bit n = XSHUT for sensor n."""
         if not self._mcp_available:
             return
         self._xshut_state = mask & 0xFF
-        self._mcp_write(MCP_OLATB, self._xshut_state)
+        self._mcp_write(MCP_OLATA, self._xshut_state)
         log.debug(f"  [MCP] XSHUT latch → 0b{self._xshut_state:08b}")
 
     def _enable_sensor(self, idx: int):
@@ -399,7 +399,7 @@ class SensorManager:
         """
         if not self._mcp_available:
             return [False] * self._num_sensors
-        raw = self._mcp_read(MCP_GPIOA)
+        raw = self._mcp_read(MCP_GPIOB)
         faults = [not bool(raw & (1 << i)) for i in range(self._num_sensors)]
         # removed spammy log.debug here
         return faults

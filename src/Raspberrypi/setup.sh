@@ -32,8 +32,10 @@ mkdir -p /home/remy/infiltrometer_data
 # ── 4. Copy app to /home/remy/infiltrometer and setup venv ────────────────────
 DEST=/home/remy/infiltrometer
 mkdir -p "$DEST"
-cp *.py "$DEST/"
-chmod +x "$DEST/main.py"
+if [ "$PWD" != "$DEST" ]; then
+    rsync -a --ignore-existing *.py "$DEST/"
+    chmod +x "$DEST/main.py"
+fi
 
 # Create and populate local venv inside the destination directory
 if [ ! -d "$DEST/venv" ]; then
