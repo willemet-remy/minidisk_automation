@@ -26,7 +26,12 @@
 import errno
 import time
 import logging
-from smbus2 import SMBus, i2c_msg
+import json
+import board
+import busio
+import struct
+import adafruit_vl53l4cd
+from smbus2 import SMBus
 from config import (
     I2C_BUS, MCP23017_ADDR, VL53L4CD_DEFAULT_ADDR, SENSOR_ADDRESSES,
     MAX_SENSORS, MCP_IODIRA, MCP_IODIRB, MCP_GPPUA, MCP_GPPUB,
@@ -54,163 +59,70 @@ def describe_range_status(code: int) -> str:
     return RANGE_STATUS_DESCRIPTION.get(code, f"Unknown status code {code}")
 
 
-# ── Try to import ST driver, fall back to register-level implementation ───────
-try:
-    import vl53l4cd as _vl53_module
-    USE_ST_DRIVER = True
-    log.info("ST VL53L4CD driver found — using official ULD wrapper")
-except ImportError:
-    USE_ST_DRIVER = False
-    log.warning("ST vl53l4cd package not found — using pure-Python register fallback")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Lightweight pure-Python VL53L4CD driver (fallback)
-# Based on ST ULD register map (UM2931)
+# Adafruit VL53L4CD Wrapper
+# Wraps the official CircuitPython driver to expose calibration methods identical
+# to what the GUI expects.
 # ─────────────────────────────────────────────────────────────────────────────
-class VL53L4CD_Raw:
-    """Minimal VL53L4CD driver using direct I2C register access via smbus2.
 
-    Addressing note
-    ---------------
-    smbus2 uses 7-bit addresses (e.g. 0x29).
-    The VL53L4CD I2C_SLAVE_DEVICE_ADDRESS register (0x0001) expects the
-    8-bit I2C address, i.e. (7bit_addr << 1).  change_address() handles this.
-    """
+class VL53L4CD_Wrapper:
+    """Wrapper around adafruit_vl53l4cd.VL53L4CD that adds simple calibration."""
 
-    # Key registers (16-bit indices)
-    _REG_I2C_SLAVE_ADDR       = 0x0001   # write (7bit_addr<<1) here
-    _REG_SYSTEM_START         = 0x0087
-    _REG_RESULT_INTERRUPT     = 0x00E5   # bit0: data ready flag
-    _REG_RESULT_CLEAR         = 0x0086   # write 0x01 to clear interrupt
-    _REG_RESULT_BLOCK_START   = 0x0089   # 17-byte result block
-    _RESULT_DISTANCE_OFFSET   = 13       # bytes 13-14 in result block = distance
-
-    def __init__(self, bus: SMBus, address: int):
-        self.bus  = bus
-        self.addr = address              # 7-bit address for smbus2
-
-    # ── Low-level register helpers ────────────────────────────────────────────
-
-    def _write_byte(self, reg16: int, value: int):
-        reg_hi = (reg16 >> 8) & 0xFF
-        reg_lo =  reg16       & 0xFF
-        self.bus.write_i2c_block_data(self.addr, reg_hi, [reg_lo, value])
-
-    def _write_word(self, reg16: int, value: int):
-        reg_hi = (reg16 >> 8) & 0xFF
-        reg_lo =  reg16       & 0xFF
-        hi = (value >> 8) & 0xFF
-        lo =  value       & 0xFF
-        self.bus.write_i2c_block_data(self.addr, reg_hi, [reg_lo, hi, lo])
-
-    def _write_dword(self, reg16: int, value: int):
-        reg_hi = (reg16 >> 8) & 0xFF
-        reg_lo =  reg16       & 0xFF
-        b = [(value >> (8 * (3 - i))) & 0xFF for i in range(4)]
-        self.bus.write_i2c_block_data(self.addr, reg_hi, [reg_lo] + b)
-
-    def _read_bytes(self, reg16: int, length: int) -> list:
-        reg_hi = (reg16 >> 8) & 0xFF
-        reg_lo =  reg16       & 0xFF
-        self.bus.write_i2c_block_data(self.addr, reg_hi, [reg_lo])
-        return self.bus.read_i2c_block_data(self.addr, 0x00, length)
-
-    # ── Address management ────────────────────────────────────────────────────
-
-    def change_address(self, new_addr_7bit: int):
-        """Change the I2C address until next power cycle or XSHUT low.
-
-        Per ST ULD source (VL53L4CD_SetI2CAddress), register 0x0001 stores the
-        7-bit address directly.  The ST C API receives the 8-bit form and shifts
-        right before writing; we receive the 7-bit smbus form and write it as-is.
-        After writing, update self.addr so subsequent calls use the new address.
-        """
-        log.debug(
-            f"    change_address: writing 7-bit 0x{new_addr_7bit:02X} to register "
-            f"0x{self._REG_I2C_SLAVE_ADDR:04X}  (smbus addr will be 0x{new_addr_7bit:02X})"
-        )
-        self._write_byte(self._REG_I2C_SLAVE_ADDR, new_addr_7bit)
-        self.addr = new_addr_7bit      # update for all future calls
-
-    # ── Initialisation ────────────────────────────────────────────────────────
+    def __init__(self, i2c_bus, address: int):
+        self._dev = adafruit_vl53l4cd.VL53L4CD(i2c_bus, address=address)
+        self.address = address
 
     def init(self):
-        """Send initialisation sequence as per ST ULD reference."""
-        # Note: We do NOT send a software reset here (0x0000 = 0x00) 
-        # because the sensor was already hardware-reset via XSHUT.
-        # A software reset would revert its I2C address back to 0x29!
-        
-        log.debug("    [init] Writing default configuration blob …")
-        defaults = [
-            (0x002D, 0x12), (0x002E, 0x01), (0x002F, 0x12),
-            (0x0031, 0x00), (0x0032, 0xFF), (0x0033, 0x00),
-            (0x0034, 0x09), (0x0035, 0x08), (0x0036, 0x10),
-            (0x0037, 0x01), (0x0038, 0x01), (0x0039, 0x00),
-            (0x003A, 0x00), (0x003B, 0x00), (0x003C, 0x00),
-            (0x003D, 0x00), (0x003E, 0xFF), (0x003F, 0x11),
-        ]
-        for reg, val in defaults:
-            self._write_byte(reg, val)
-        time.sleep(0.010)
-
-        log.debug("    [init] Setting timing budget 50 ms …")
-        self.set_timing_budget(50)
-        log.debug("    [init] Init complete")
-
-    def set_timing_budget(self, budget_ms: int):
-        """Set measurement timing budget in milliseconds (10–200 ms)."""
-        budget_ms = max(10, min(200, budget_ms))
-        self._write_word(0x0021, budget_ms)
+        # The __init__ of Adafruit already runs the 300+ byte payload.
+        # We just set timing budget.
+        self._dev.timing_budget = 50
 
     def start_ranging(self):
-        log.debug("    [ranging] start_ranging")
-        self._write_byte(self._REG_SYSTEM_START, 0x40)
+        self._dev.start_ranging()
 
     def stop_ranging(self):
-        log.debug("    [ranging] stop_ranging")
-        self._write_byte(self._REG_SYSTEM_START, 0x00)
+        self._dev.stop_ranging()
 
-    def data_ready(self) -> bool:
-        status = self._read_bytes(self._REG_RESULT_INTERRUPT, 1)
-        return bool(status[0] & 0x01)
-
-    def get_distance(self) -> tuple[int, int]:
-        """Returns (distance_mm, range_status).  range_status 0 = valid."""
+    def get_distance(self):
+        # Wait up to 500ms for data
         for _ in range(500):
-            if self.data_ready():
+            if self._dev.data_ready:
                 break
             time.sleep(0.001)
 
-        result   = self._read_bytes(self._REG_RESULT_BLOCK_START, 17)
-        status   = result[0]
-        distance = (result[self._RESULT_DISTANCE_OFFSET] << 8) | result[self._RESULT_DISTANCE_OFFSET + 1]
+        dist_cm = self._dev.distance
+        status = self._dev.range_status
+        self._dev.clear_interrupt()
 
-        self._write_byte(self._REG_RESULT_CLEAR, 0x01)
-        return distance, status
+        dist_mm = int(dist_cm * 10) if dist_cm is not None else 0
+        return dist_mm, status
+
+    def _write_word(self, reg16: int, value: int):
+        self._dev._write_register(reg16, struct.pack(">H", value))
 
     def get_full_result(self) -> tuple[int, float, float, int]:
         """Returns distance_mm, spad_nb, signal_kcps, status for calibration use."""
         for _ in range(500):
-            if self.data_ready():
+            if self._dev.data_ready:
                 break
             time.sleep(0.001)
 
-        result   = self._read_bytes(self._REG_RESULT_BLOCK_START, 17)
-        status   = result[0]
-        spad_nb  = ((result[3] << 8) | result[4]) / 256.0
-        signal   = ((result[5] << 8) | result[6]) * 8.0
-        distance = (result[13] << 8) | result[14]
+        # Result block starts at 0x0089 in VL53L4CD
+        result = self._dev._read_register(0x0089, 17)
+        status = result[0]
+        spad_nb = ((result[3] << 8) | result[4]) / 256.0
+        signal = ((result[5] << 8) | result[6]) * 8.0
+        dist_mm = (result[13] << 8) | result[14]
 
-        self._write_byte(self._REG_RESULT_CLEAR, 0x01)
-        return distance, max(0.01, spad_nb), signal, status
+        self._dev.clear_interrupt()
+        return dist_mm, max(0.01, spad_nb), signal, status
 
     def calibrate_offset(self, target_dist_mm: int, nb_samples: int = 50) -> int:
         """Calculates and applies offset. Returns the offset in mm."""
-        self._write_word(0x001E, 0x0000) # RANGE_OFFSET_MM
-        self._write_word(0x0020, 0x0000) # INNER_OFFSET_MM
-        self._write_word(0x0022, 0x0000) # OUTER_OFFSET_MM
-        
+        self._write_word(0x001E, 0x0000) # _VL53L4CD_RANGE_OFFSET_MM
+        self._write_word(0x0020, 0x0000)
+        self._write_word(0x0022, 0x0000)
+
         self.start_ranging()
         for _ in range(10):  # Heat loop
             self.get_full_result()
@@ -226,7 +138,7 @@ class VL53L4CD_Raw:
         avg_dist /= nb_samples
         offset_mm = target_dist_mm - avg_dist
         offset_reg_val = int(offset_mm * 4) & 0xFFFF
-        
+
         self._write_word(0x001E, offset_reg_val)
         return int(offset_mm)
 
@@ -254,37 +166,9 @@ class VL53L4CD_Raw:
 
         tmp_xtalk = 512.0 * (avg_signal * (1.0 - (avg_dist / target_dist_mm))) / avg_spad
         cal_xtalk = int(tmp_xtalk) & 0xFFFF
-        
-        self._write_word(0x0016, cal_xtalk) # XTALK_PLANE_OFFSET_KCPS
+
+        self._write_word(0x0016, cal_xtalk) # _VL53L4CD_XTALK_PLANE_OFFSET_KCPS
         return (cal_xtalk * 1000) >> 9
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ST driver wrapper (when vl53l4cd package IS installed)
-# ─────────────────────────────────────────────────────────────────────────────
-class VL53L4CD_ST:
-    """Thin wrapper around the official ST Python driver."""
-
-    def __init__(self, bus: SMBus, address: int):
-        self.address = address
-        self._dev = _vl53_module.VL53L4CD(bus, address)
-
-    def init(self):
-        self._dev.open()
-        self._dev.start_ranging()
-
-    def stop_ranging(self):
-        self._dev.stop_ranging()
-
-    def change_address(self, new_addr_7bit: int):
-        """ST driver change_address — uses the driver's own method."""
-        self._dev.change_address(new_addr_7bit)
-        self.address = new_addr_7bit
-
-    def get_distance(self) -> tuple[int, int]:
-        """Returns (distance_mm, status). Status 0 = valid."""
-        result = self._dev.get_result()
-        return result.distance_mm, result.range_status
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -316,11 +200,12 @@ class SensorManager:
     def __init__(self, num_sensors: int = MAX_SENSORS):
         self._num_sensors = max(1, min(num_sensors, MAX_SENSORS))
         self.bus = SMBus(I2C_BUS)
+        self.i2c_bus = busio.I2C(board.SCL, board.SDA)
         self.sensors: list = [None] * self._num_sensors
         self._xshut_state: int = 0x00
         self._mcp_available: bool = False   # set True in initialise() if MCP found
         
-        self._calibration_file = "/home/remy/infiltrometer/calibration.json"
+        self._calibration_file = "/home/pi/infiltrometer/calibration.json"
         self._calibrations = self._load_calibrations()
 
     def _load_calibrations(self) -> dict:
@@ -355,24 +240,27 @@ class SensorManager:
             log.warning("  [MCP] MCP23017 not available — skipping XSHUT setup.")
             log.warning("  [MCP] Sensors must have XSHUT tied high (pull-up). Only 1 sensor supported in this mode.")
             return
-        log.debug("  [MCP] Setting IODIRA=0x00 (all port A = output) …")
-        self._mcp_write(MCP_IODIRA, 0x00)   # port A = outputs (XSHUT lines)
-        log.debug("  [MCP] Setting IODIRB=0xFF (all port B = input) …")
-        self._mcp_write(MCP_IODIRB, 0xFF)   # port B = inputs (GPIO1 lines)
-        log.debug("  [MCP] Disabling pull-ups on port A (XSHUT driven) …")
-        self._mcp_write(MCP_GPPUA,  0x00)   # no pull-ups on XSHUT
-        log.debug("  [MCP] Enabling pull-ups on port B (GPIO1 open-drain) …")
-        self._mcp_write(MCP_GPPUB,  0xFF)   # pull-ups on GPIO1 inputs
+        log.debug("  [MCP] Setting IODIRA=0xFF (all port A = input) …")
+        self._mcp_write(MCP_IODIRA, 0xFF)   # port A = inputs (GPIO1 lines)
+        log.debug("  [MCP] Setting IODIRB=0x00 (all port B = output) …")
+        self._mcp_write(MCP_IODIRB, 0x00)   # port B = outputs (XSHUT lines)
+        log.debug("  [MCP] Enabling pull-ups on port A (GPIO1 open-drain) …")
+        self._mcp_write(MCP_GPPUA,  0xFF)   # pull-ups on GPIO1 inputs
+        log.debug("  [MCP] Disabling pull-ups on port B (XSHUT driven) …")
+        self._mcp_write(MCP_GPPUB,  0x00)   # no pull-ups on XSHUT
         self._set_xshut(0x00)               # all XSHUT lines low = all sensors off
-        log.info("  [MCP] MCP23017 configured (port A=XSHUT outputs, port B=GPIO1 inputs)")
+        log.info("  [MCP] MCP23017 configured (port B=XSHUT outputs, port A=GPIO1 inputs)")
 
     def _set_xshut(self, mask: int):
-        """Set MCP port A output latch. Bit n = XSHUT for sensor n."""
+        """Set MCP port B output latch. Bit n = XSHUT for sensor n."""
         if not self._mcp_available:
             return
         self._xshut_state = mask & 0xFF
-        self._mcp_write(MCP_OLATA, self._xshut_state)
-        log.debug(f"  [MCP] XSHUT latch → 0b{self._xshut_state:08b}")
+        try:
+            self._mcp_write(MCP_OLATB, self._xshut_state)
+            log.debug(f"  [MCP] XSHUT latch → 0b{self._xshut_state:08b}")
+        except OSError as e:
+            log.error(f"  [MCP] Failed to set XSHUT latch (I2C error): {e}")
 
     def _enable_sensor(self, idx: int):
         """Pull XSHUT high for sensor idx (sensor leaves HW standby)."""
@@ -392,17 +280,20 @@ class SensorManager:
 
     def read_gpio_faults(self) -> list[bool]:
         """
-        Read GPIO1 lines from MCP port B.
+        Read GPIO1 lines from MCP port A.
         Returns list[bool] per sensor: True = GPIO1 asserted low (interrupt/fault).
         GPIO1 is open-drain active low; MCP pull-ups keep it high when idle.
         Returns all-False when MCP is not available.
         """
         if not self._mcp_available:
             return [False] * self._num_sensors
-        raw = self._mcp_read(MCP_GPIOB)
-        faults = [not bool(raw & (1 << i)) for i in range(self._num_sensors)]
-        # removed spammy log.debug here
-        return faults
+        try:
+            raw = self._mcp_read(MCP_GPIOA)
+            faults = [not bool(raw & (1 << i)) for i in range(self._num_sensors)]
+            return faults
+        except OSError as e:
+            # Don't spam errors on every loop if the bus is dead, but don't crash either
+            return [False] * self._num_sensors
 
     # ── I2C scan ──────────────────────────────────────────────────────────────
 
@@ -533,26 +424,24 @@ class SensorManager:
             cb(f"  [S{idx}] Sensor found at default addr 0x{VL53L4CD_DEFAULT_ADDR:02X} ✓")
 
             # Instantiate driver at default address
-            if USE_ST_DRIVER:
-                cb(f"  [S{idx}] Creating ST driver instance at 0x{VL53L4CD_DEFAULT_ADDR:02X}")
-                sensor = VL53L4CD_ST(self.bus, VL53L4CD_DEFAULT_ADDR)
-            else:
-                cb(f"  [S{idx}] Creating register-fallback driver at 0x{VL53L4CD_DEFAULT_ADDR:02X}")
-                sensor = VL53L4CD_Raw(self.bus, VL53L4CD_DEFAULT_ADDR)
+            cb(f"  [S{idx}] Creating Adafruit driver instance at 0x{VL53L4CD_DEFAULT_ADDR:02X}")
+            try:
+                sensor = VL53L4CD_Wrapper(self.i2c_bus, VL53L4CD_DEFAULT_ADDR)
+            except Exception as e:
+                cb(f"  [S{idx}] ✗ Failed to initialize driver: {e}")
+                sensor = None
 
+            if not sensor:
+                self._disable_sensor(idx)
+                return False
 
             # Re-address to unique slot — only when MCP is available (we can control XSHUT)
             if self._mcp_available:
                 cb(
-                    f"  [S{idx}] Remapping 0x{VL53L4CD_DEFAULT_ADDR:02X} → 0x{target_addr:02X} "
-                    f"(writing 7-bit addr 0x{target_addr:02X} to register 0x0001) …"
+                    f"  [S{idx}] Remapping 0x{VL53L4CD_DEFAULT_ADDR:02X} → 0x{target_addr:02X} ..."
                 )
-                if USE_ST_DRIVER:
-                    sensor._dev.change_address(target_addr)
-                    sensor.address = target_addr
-                    sensor._dev = _vl53_module.VL53L4CD(self.bus, target_addr)
-                else:
-                    sensor.change_address(target_addr)   # writes 7-bit addr to reg 0x0001
+                sensor._dev.set_address(target_addr)
+                sensor.address = target_addr
 
                 cb(f"  [S{idx}] Waiting {int(self._ADDR_CHANGE_WAIT_S*1000)} ms for address change to register …")
                 time.sleep(self._ADDR_CHANGE_WAIT_S)
@@ -571,13 +460,13 @@ class SensorManager:
                 # Sensor stays at 0x29; point target_addr at it so init/logging is consistent
                 target_addr = VL53L4CD_DEFAULT_ADDR
 
-            # Run init sequence and start ranging
+            # Run init sequence (timing budget)
             cb(f"  [S{idx}] Running init sequence at 0x{target_addr:02X} …")
             sensor.init()
 
             # Apply calibration if available
             calib = self._calibrations.get(str(idx))
-            if calib and not USE_ST_DRIVER:
+            if calib:
                 cb(f"  [S{idx}] Applying saved calibration (Offset={calib['result_offset_mm']}mm, Xtalk={calib['result_xtalk_kcps']/1000.0:.1f}kcps)")
                 sensor._write_word(0x001E, calib["offset_reg"])
                 sensor._write_word(0x0016, calib["xtalk_reg"])
@@ -585,8 +474,7 @@ class SensorManager:
             time.sleep(self._POST_INIT_WAIT_S)
 
             cb(f"  [S{idx}] Starting ranging …")
-            if not USE_ST_DRIVER:
-                sensor.start_ranging()
+            sensor.start_ranging()
 
             self.sensors[idx] = sensor
             log.info(f"  [S{idx}] Sensor {idx + 1} ONLINE at 0x{target_addr:02X} ✓")

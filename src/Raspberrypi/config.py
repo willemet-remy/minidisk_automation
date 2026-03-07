@@ -20,14 +20,14 @@ NUM_SENSORS = 8          # Default to 6 sensors for field conditions
 
 # ── MCP23017 registers ────────────────────────────────────────────────────────
 # BANK=0 (default): registers interleaved
-MCP_IODIRA   = 0x00   # Direction register port A (XSHUT outputs)
-MCP_IODIRB   = 0x01   # Direction register port B (GPIO1 inputs)
+MCP_IODIRA   = 0x00   # Direction register port A (GPIO1 inputs)
+MCP_IODIRB   = 0x01   # Direction register port B (XSHUT outputs)
 MCP_GPPUA    = 0x0C   # Pull-up port A
 MCP_GPPUB    = 0x0D   # Pull-up port B
-MCP_GPIOA    = 0x12   # Read/write port A
-MCP_GPIOB    = 0x13   # Read/write port B (GPIO1 interrupt lines)
-MCP_OLATA    = 0x14   # Output latch port A (XSHUT outputs)
-MCP_OLATB    = 0x15   # Output latch port B
+MCP_GPIOA    = 0x12   # Read/write port A (GPIO1 interrupt lines)
+MCP_GPIOB    = 0x13   # Read/write port B
+MCP_OLATA    = 0x14   # Output latch port A
+MCP_OLATB    = 0x15   # Output latch port B (XSHUT outputs)
 
 # ── Measurement ───────────────────────────────────────────────────────────────
 # Available intervals in seconds (shown in GUI dropdown)

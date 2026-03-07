@@ -27,10 +27,10 @@ if ! grep -q "dtparam=i2c_arm_baudrate" /boot/firmware/config.txt; then
 fi
 
 # ── 3. Create data fallback directory ─────────────────────────────────────────
-mkdir -p /home/remy/infiltrometer_data
+mkdir -p /home/pi/infiltrometer_data
 
-# ── 4. Copy app to /home/remy/infiltrometer and setup venv ────────────────────
-DEST=/home/remy/infiltrometer
+# ── 4. Copy app to /home/pi/infiltrometer and setup venv ────────────────────
+DEST=/home/pi/infiltrometer
 mkdir -p "$DEST"
 if [ "$PWD" != "$DEST" ]; then
     rsync -a --ignore-existing *.py "$DEST/"
@@ -41,7 +41,7 @@ fi
 if [ ! -d "$DEST/venv" ]; then
     python3 -m venv "$DEST/venv"
 fi
-"$DEST/venv/bin/pip" install smbus2 vl53l4cd
+"$DEST/venv/bin/pip" install smbus2 adafruit-circuitpython-vl53l4cd
 
 # ── 5. Autostart on boot (via systemd, not cron, so GUI has display access) ──
 SERVICE_FILE=/etc/systemd/system/infiltrometer.service
@@ -52,12 +52,12 @@ After=multi-user.target
 
 
 [Service]
-User=remy
+User=pi
 Type=idle
 Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/remy/.Xauthority
-WorkingDirectory=/home/remy/infiltrometer
-ExecStart=/home/remy/infiltrometer/venv/bin/python /home/remy/infiltrometer/main.py
+Environment=XAUTHORITY=/home/pi/.Xauthority
+WorkingDirectory=/home/pi/infiltrometer
+ExecStart=/home/pi/infiltrometer/venv/bin/python /home/pi/infiltrometer/main.py
 Restart=on-failure
 RestartSec=5
 
