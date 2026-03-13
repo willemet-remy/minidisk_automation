@@ -6,9 +6,6 @@ I2C_BUS = 1                        # /dev/i2c-1 on all modern RPi
 # MCP23017 I2C address (A0=A1=A2=GND → 0x20)
 MCP23017_ADDR = 0x20
 
-# INA219 battery monitor address
-INA219_ADDR = 0x43
-
 # VL53L4CD base address (factory default)
 VL53L4CD_DEFAULT_ADDR = 0x29
 
@@ -30,16 +27,20 @@ MCP_OLATA    = 0x14   # Output latch port A
 MCP_OLATB    = 0x15   # Output latch port B (XSHUT outputs)
 
 # ── Measurement ───────────────────────────────────────────────────────────────
-# Available intervals in seconds (shown in GUI dropdown)
-MEASUREMENT_INTERVALS = [1, 2, 5, 10, 30, 60]
+# Available intervals in seconds (shown in GUI dropdown, 0 = Max speed)
+MEASUREMENT_INTERVALS = [0, 1, 2, 5, 10, 30, 60]
 DEFAULT_INTERVAL = 5   # seconds
 
 # Distance threshold (mm) below which a sensor raises a "low water" warning
 LOW_WATER_THRESHOLD_MM = 400
 
+# Steady State Detection
+STEADY_STATE_WINDOW_S = 30
+STEADY_STATE_TOLERANCE_MM = 1.0
+
 # ── Data logging ──────────────────────────────────────────────────────────────
-USB_MOUNT_PATH = "/media/remy"       # RPi OS auto-mounts USB sticks here
-FALLBACK_DATA_DIR = "/home/remy/infiltrometer_data"
+USB_MOUNT_PATH = "/media/pi"       # RPi OS auto-mounts USB sticks here
+FALLBACK_DATA_DIR = "/home/pi/infiltrometer_data"
 CSV_DELIMITER = ","
 CSV_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 

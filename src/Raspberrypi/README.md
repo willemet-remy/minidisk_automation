@@ -16,7 +16,7 @@ Measurements are logged to CSV on a USB stick.
 | Waveshare 7" Control Panel for Raspberry Pi 4 | User interface | 1 |
 | VL53L4CD breakout | Distance sensor | 8 |
 | MCP23017-E/SP (DIP-28) | XSHUT + GPIO1 I/O expander | 1 |
-| Waveshare UPS Hat (C) for Raspberry Pi Zero 5V | LiPo power management + UPS | 1 |
+| INA219 | Battery Voltage/Current I2C Monitor | 1 |
 | LiPo 3.7V ≥ 5000 mAh | Battery | 1 |
 | 4.7 kΩ resistor | I2C SDA/SCL pull-ups | 2 |
 | 10 kΩ resistor | XSHUT pull-downs | 8 |
@@ -109,9 +109,9 @@ GPIO1 → MCP23017 GPB[n]
 
 1. Flash Raspberry Pi OS **with Desktop** (Bookworm 64-bit) to SD card.
 2. Boot, connect to network briefly (for apt).
-3. Copy the infiltrometer folder to the Pi.
-scp -r /home/remy/Documents/minidisk_automation/src/Raspberrypi remy@raspberrypi_ip:/Documents/minidisk
-4. Run:
+3. Copy the infiltrometer folder to the Pi:
+   `scp -r /home/remy/Documents/minidisk_automation/src/Raspberrypi remy@raspberrypi_ip:/Documents/minidisk`
+4. Run the setup script to create a local virtual environment (`venv`) and install dependencies:
    ```bash
    cd /path/to/infiltrometer
    bash setup.sh
@@ -128,10 +128,12 @@ After reboot, the GUI launches automatically on the touchscreen.
 infiltrometer/
 ├── main.py            Entry point
 ├── config.py          All constants (addresses, thresholds, colours)
-├── sensor_manager.py  MCP23017 + VL53L4CD driver
+├── sensor_manager.py  MCP23017 + VL53L4CD driver + Calibration Logic
 ├── data_logger.py     CSV logging to USB stick
-├── gui.py             PyQt5 GUI
-└── setup.sh           Installation script
+├── gui.py             PyQt5 GUI (Measurement & Calibration Dialog)
+├── INA219.py          I2C Battery Monitor driver
+├── calibration.json   Saved Offset and Xtalk profiles (Auto-generated)
+└── setup.sh           Installation script (venv + systemd)
 ```
 
 ---
@@ -152,6 +154,20 @@ timestamp, sensor_0_mm, ..., sensor_7_mm, tension_0_hPa, ..., tension_7_hPa, fau
 
 ---
 
+## Warnings & Status Codes
+
+When running the application, you may see warnings appear on the sensor tiles or the bottom panel.
+
+| Warning / Status | Cause | Solution / Check |
+|---|---|---|
+| `⚠ GPIO fault` | Sensor detected a hardware interrupt/fault on its GPIO1 line. | Check wiring, ensure sensor is clean. Sometimes caused by power fluctuations. |
+| `⚠ Low water!` | Distance measured is below `LOW_WATER_THRESHOLD_MM`. | Refill the water reservoir. |
+| `⚠ Warning: [Text]` | The VL53L4CD sensor returned a non-zero status code (e.g. Signal failure, Out-of-bounds). | Check that the target is within range (up to 1.2m), the plexiglass is clean, and there is no direct sunlight blinding the sensor. |
+| `Error` (Red dot) | Sensor completely stopped responding to I2C during measurement. | Check physical I2C (SDA/SCL) and power connections. |
+| `MCP: ✗` | The MCP23017 multiplexer was not found. | Only 1 sensor can be used in this fallback mode. Check MCP wiring if you need multiple sensors. |
+
+---
+
 ## Troubleshooting
 
 | Problem | Check |
@@ -159,8 +175,20 @@ timestamp, sensor_0_mm, ..., sensor_7_mm, tension_0_hPa, ..., tension_7_hPa, fau
 | Sensor not detected | Check XSHUT 10kΩ pull-down, verify SDA/SCL connections |
 | All sensors fail init | Check I2C enabled (`i2cdetect -y 1`), check 4.7kΩ pull-ups |
 | USB stick not found | Check `/media/pi/` for mount, try different USB stick |
-| Battery % not showing | Check PiJuice HAT is seated on GPIO header |
 | GUI not starting | `journalctl -u infiltrometer -f` for logs |
+
+---
+
+## FAQ & Technical Details
+
+**What does the `mm` measurement represent?**
+The `mm` value represents the corrected, true distance from the VL53L4CD sensor surface to the water/target surface. During calibration, the system calculates the impact of the plexiglass cover and optical crosstalk, and applies this correction directly to the sensor's hardware registers. This ensures the output is the actual, calibrated physical distance from the sensor to the target, rather than just a raw reading with a software offset.
+
+**What is the communication delay between the sensor and the screen?**
+The sensor requires roughly 50ms of "timing budget" per measurement to confidently calculate the distance. After that, I2C retrieval and GUI rendering take < 10ms. Therefore, the physical delay from the water level changing to the screen updating is approximately **50–60 milliseconds** plus the interval time you selected in the top bar.
+
+**What is the advantage of lowering the I2C frequency?**
+The system configures the I2C bus to 100 kHz (Standard Mode) rather than 400 kHz (Fast Mode). When running 8 sensors over relatively long wires, higher frequencies can cause signal degradation, cross-talk, and data corruption (I2C errors). Lowering the frequency makes the communication extremely stable and immune to wire capacitance, without noticeably affecting the measuring rate since the sensor bottleneck is its 50ms light-integration time.
 
 ---
 
@@ -168,8 +196,18 @@ timestamp, sensor_0_mm, ..., sensor_7_mm, tension_0_hPa, ..., tension_7_hPa, fau
 
 | Parameter | Default | Description |
 |---|---|---|
-| `LOW_WATER_THRESHOLD_MM` | 20 | Trigger low water warning below this distance |
-| `MEASUREMENT_INTERVALS` | [1,2,5,10,30,60] | Available intervals in GUI dropdown |
+| `LOW_WATER_THRESHOLD_MM` | 400 | Trigger low water warning below this distance |
+| `MEASUREMENT_INTERVALS` | [1,2,5,10,30,60,300] | Available intervals in GUI dropdown |
 | `DEFAULT_INTERVAL` | 5 | Default measurement interval (seconds) |
-| `USB_MOUNT_PATH` | /media/pi | Where USB sticks are mounted |
-| `GRAPH_HISTORY` | 120 | Data points in live graph |
+| `STEADY_STATE_WINDOW_S` | 30 | Seconds to test for distance shift |
+| `STEADY_STATE_TOLERANCE_MM` | 1.0 | Allowed mm of shift to show steady state (Green dot) |
+
+---
+
+## VL53L4CD Calibration Protocol
+For accurate readings through 2mm plexiglass against a 17% white reflecting target:
+1. Hit **Start All** to verify the sensors connect, then hit **Stop All**.
+2. Click **[🔧 Calibrate]** in the GUI.
+3. Select your physical sensor (Sensor 1 - 8) and input the true distance from the sensor to the target.
+4. The system calculates and saves the `Offset` and `Xtalk` compensation to `calibration.json`.
+5. These profiles are automatically applied on every startup!
