@@ -1,80 +1,187 @@
-# Infiltrometer Automation - Minidisk
+# Infiltrometer Controller — Documentation
 
-## Description
-This project aims to automate an infiltrometer system for soil hydraulic measurements.
-The main objectives are:
+## Overview
 
-1. **Automated Mariotte Bottle (ILVO/LLN)**
-   - Actively regulate hydraulic head (tension)
-   - Modular and field-ready design
-
-2. **Data Acquisition System for the infiltrometer (ILVO)**
-   - Continuous, high-accuracy measurement
-   - Field-ready and modular design
-   - Cost-friendly
-
-3. **Coding Framework for Data Integration (ILVO/LLN)**
-   - Integrates Minidisk measurements with the automated Mariotte bottle
-   - Modular code adaptable to different measurement protocols
-   - Algorithm to detect constant flow and change the tension
-
-4. **Guidelines for Laboratory and Field Work (?)**
-   - Standardized procedures for setup, operation, and data collection
-   - Recommendations for reliable and repeatable measurements
-
-## To do 
-- Find the best idea for the mariotte bottles that is cost-friendly. Try to define this idea
+Controls 8 × VL53L4CD time-of-flight sensors connected to a Raspberry Pi via I2C.
+XSHUT and GPIO1 lines are managed through an MCP23017 I2C GPIO expander.
+Measurements are logged to CSV on a USB stick.
 
 ---
 
-## Repository Structure
+## Hardware Bill of Materials
+
+| Component | Purpose | Qty |
+|---|---|---|
+| Raspberry Pi Zero | Main controller | 1 |
+| Waveshare 7" Control Panel for Raspberry Pi 4 | User interface | 1 |
+| VL53L4CD breakout | Distance sensor | 8 |
+| MCP23017-E/SP (DIP-28) | XSHUT + GPIO1 I/O expander | 1 |
+| INA219 | Battery Voltage/Current I2C Monitor | 1 |
+| LiPo 3.7V ≥ 5000 mAh | Battery | 1 |
+| 4.7 kΩ resistor | I2C SDA/SCL pull-ups | 2 |
+| 10 kΩ resistor | XSHUT pull-downs | 8 |
+| 100 nF ceramic cap | Decoupling per sensor | 10 |
+| USB-A OTG adapter (micro USB) | USB stick access | 1 |
+| USB stick ≥ 16 GB | Data storage | 1 |
+| Micro SD ≥ 16 GB Class 10 | RPi OS | 1 |
 
 ---
 
-## Design Concepts
+## Wiring
 
-| Objective Number | Idea | Description | Pros | Cons | Comments |
-|-----------|------|-------------|------|------|---------|
-| 1 | Vacuum pump + pressure sensor | Actively control tension via vacuum pump | Fast response, precise control | Higher cost, higher power demand | Suitable for lab setups |
-| 1 | [Servo + threaded lift system](Figures/Mariotte_Cylinder.gif) | Physically adjust tension in Mariotte bottles | Simple, robust concept | Sensitive to horizontal alignment | Potential for field deployment |
-| 2 | SD card logging | Local storage of sensor data | Reliable, simple | Manual data retrieval | Ideal for remote field sites |
-| 2 | Wireless transmission (ESP32/Raspberry Pi) | Real-time data access | Continuous monitoring | | Useful for hand free system |
-| 2 | Caps modification | Connect Mariotte bottles to the bottom and top cap with sensors | Simplifies design, supports different acrylic tube size | - | |
+### I2C Bus (all devices share SDA/SCL)
+
+```
+RPi GPIO2 (SDA, pin 3) ──┬── 4.7kΩ to 3.3V
+                          ├── MCP23017 pin 13 (SDA)
+                          └── All 8 × VL53L4CD SDA
+
+RPi GPIO3 (SCL, pin 5) ──┬── 4.7kΩ to 3.3V
+                          ├── MCP23017 pin 12 (SCL)
+                          └── All 8 × VL53L4CD SCL
+```
+
+### MCP23017 Address Pins
+
+```
+A0 (pin 15) → GND
+A1 (pin 16) → GND
+A2 (pin 17) → GND
+→ I2C address = 0x20
+RESET (pin 18) → 3.3V
+VDD (pin 28) → 3.3V
+VSS (pin 9)  → GND
+```
+
+### MCP23017 Port A → XSHUT Lines
+
+```
+GPA0 (pin 21) → XSHUT sensor 0   (+ 10kΩ to GND)
+GPA1 (pin 22) → XSHUT sensor 1   (+ 10kΩ to GND)
+GPA2 (pin 23) → XSHUT sensor 2   ...
+GPA3 (pin 24) → XSHUT sensor 3
+GPA4 (pin 25) → XSHUT sensor 4
+GPA5 (pin 26) → XSHUT sensor 5
+GPA6 (pin 27) → XSHUT sensor 6
+GPA7 (pin 28) → XSHUT sensor 7   (+ 10kΩ to GND)
+```
+
+### MCP23017 Port B → GPIO1 Lines
+
+```
+GPB0 (pin 1) → GPIO1 sensor 0   (open-drain, pulled up internally)
+GPB1 (pin 2) → GPIO1 sensor 1
+...
+GPB7 (pin 8) → GPIO1 sensor 7
+```
+
+### VL53L4CD per sensor
+
+```
+VDD   → 3.3V (+ 100nF cap to GND)
+GND   → GND
+SDA   → I2C bus
+SCL   → I2C bus
+XSHUT → MCP23017 GPA[n]
+GPIO1 → MCP23017 GPB[n]
+```
 
 ---
-## Material links
-| Objective Number | Components | Description | Pros | Cons | Comments |
-|-----------|------|-------------|------|------|---------|
-| 1 | [Differential pressure sensors](https://www.mouser.be/ProductDetail/Honeywell/ABP2DDAN001PD2A3XX?qs=pUKx8fyJudBCfXbaK3v%252BwQ%3D%3D) | Low cost differential pressure | | | 3.3V |
-| 2 | [ToF sensors : L53L4CD](https://community.st.com/t5/mems-and-sensors/how-to-choose-a-time-of-flight-sensor/ta-p/49721) | Low cost and ~mm resolution|Possibility to give an adress | | 3.3V |
-| 1 | [Sevo motors](https://www.digikey.be/en/products/filter/motors-ac-dc/178?s=N4IgjCBcpgLFoDGUBmBDANgZwKYBoQB7KAbXADYBOWKkAgDgHYBWWegBjouvua48rty8AgCYw7UY0pdxkjl0axxUxeSZgZYifTD1ZO5lpD1R7WO04MzAZkrHRsSs3rkQAXQIAHAC5QQAMo%2BAE4AlgB2AOYgAL4EejYIIMiQ6Nj4RKQgNjYszIwe3n6QgSER0XHglKrQyaiYuATEkGQ5NsyShSC%2B-kFhUbGVolm4wQBuhAAEALaEPoTBWF1utaEAJv4AtBIQRf5cPgCeXjj%2BaFjIMTFAA) | | | | |
+
+## I2C Address Map
+
+| Address | Device |
+|---|---|
+| 0x14 | PiJuice HAT |
+| 0x20 | MCP23017 |
+| 0x2A | Sensor 0 (assigned at boot) |
+| 0x2B | Sensor 1 |
+| 0x2C | Sensor 2 |
+| 0x2D | Sensor 3 |
+| 0x2E | Sensor 4 |
+| 0x2F | Sensor 5 |
+| 0x30 | Sensor 6 |
+| 0x31 | Sensor 7 |
 
 ---
 
-##  Questions
-- Can a single Mariotte bottle serve multiple Minidisks, or is it preferable to provide active control for each Minidisk individually?  
-Would it be a nice to try to develop a system that can have different regulated tension ports. For example, different chambers with several servos + threated lift system
-- The servo + threaded lift system needs to be controled mm accuracy. A servo motor can't do that and a stepper motors is too expensive. Which solutions ? 
+## Software Installation
+
+1. Flash Raspberry Pi OS **with Desktop** (Bookworm 64-bit) to SD card.
+2. Boot, connect to network briefly (for apt).
+3. Copy the infiltrometer folder to the Pi:
+   `scp -r /home/remy/Documents/minidisk_automation/src/Raspberrypi remy@raspberrypi_ip:/Documents/minidisk`
+4. Run the setup script to create a local virtual environment (`venv`) and install dependencies:
+   ```bash
+   cd /path/to/infiltrometer
+   bash setup.sh
+   sudo reboot
+   ```
+
+After reboot, the GUI launches automatically on the touchscreen.
 
 ---
 
-## Potential Improvements
-- Mechanical system to decide infiltration start time across devices. Would permit the setup configuration and then the start of the measurement  
-- Tripod or stabilizing connectors for field Minidisk deployment  
+## File Structure
+
+```
+infiltrometer/
+├── main.py            Entry point
+├── config.py          All constants (addresses, thresholds, colours)
+├── sensor_manager.py  MCP23017 + VL53L4CD driver + Calibration Logic
+├── data_logger.py     CSV logging to USB stick
+├── gui.py             PyQt5 GUI (Measurement & Calibration Dialog)
+├── INA219.py          I2C Battery Monitor driver
+├── calibration.json   Saved Offset and Xtalk profiles (Auto-generated)
+└── setup.sh           Installation script (venv + systemd)
+```
 
 ---
 
-## Authors
-- **Rémy Willemet** – Remy.Willemet@ilvo.vlaanderen.be  
-- **Aurelien Lengrend** - Aurelien.Lengrand@uclouvain.be
-- **Daniel Wardak** - Daniel.Wardak@uclouvain.be
+## CSV Output Format
+
+Saved to USB stick as `infiltrometer_YYYYMMDD_HHMMSS.csv`:
+
+```
+timestamp, sensor_0_mm, ..., sensor_7_mm, tension_0_hPa, ..., tension_7_hPa, fault_0, ..., fault_7, low_water_0, ..., low_water_7
+2025-06-01 09:00:00, 142, 138, ..., 50.0, 50.0, ..., 0, 0, ..., 0, 0, ...
+```
+
+- **sensor_N_mm**: measured water distance in mm (blank = error)
+- **tension_N_hPa**: applied tension entered in GUI
+- **fault_N**: 1 if GPIO1 fault line asserted
+- **low_water_N**: 1 if distance below threshold (default 20 mm)
 
 ---
 
-## License
-MIT License  
+## Troubleshooting
+
+| Problem | Check |
+|---|---|
+| Sensor not detected | Check XSHUT 10kΩ pull-down, verify SDA/SCL connections |
+| All sensors fail init | Check I2C enabled (`i2cdetect -y 1`), check 4.7kΩ pull-ups |
+| USB stick not found | Check `/media/pi/` for mount, try different USB stick |
+| Battery % not showing | Check INA219 wiring to I2C and `0x43` address |
+| GUI not starting | `journalctl -u infiltrometer -f` for logs |
 
 ---
 
-## Status
-🚧 In Progress  
+## Adjustable Parameters (config.py)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `LOW_WATER_THRESHOLD_MM` | 400 | Trigger low water warning below this distance |
+| `MEASUREMENT_INTERVALS` | [1,2,5,10,30,60,300] | Available intervals in GUI dropdown |
+| `DEFAULT_INTERVAL` | 5 | Default measurement interval (seconds) |
+| `STEADY_STATE_WINDOW_S` | 30 | Seconds to test for distance shift |
+| `STEADY_STATE_TOLERANCE_MM` | 1.0 | Allowed mm of shift to show steady state (Green dot) |
+
+---
+
+## VL53L4CD Calibration Protocol
+For accurate readings through 2mm plexiglass against a 17% white reflecting target:
+1. Hit **Start All** to verify the sensors connect, then hit **Stop All**.
+2. Click **[🔧 Calibrate]** in the GUI.
+3. Select your physical sensor (Sensor 1 - 8) and input the true distance from the sensor to the target.
+4. The system calculates and saves the `Offset` and `Xtalk` compensation to `calibration.json`.
+5. These profiles are automatically applied on every startup!

@@ -4,6 +4,9 @@
 
 set -e
 echo "=== Infiltrometer Setup ==="
+echo "Created by Rémy Willemet =="
+echo "First version 2027-03-27 == "
+echo "============================"
 
 # ── 1. System packages ────────────────────────────────────────────────────────
 sudo apt update
@@ -14,50 +17,52 @@ sudo apt install -y \
     i2c-tools \
     git
 
-# ── 2. Python packages ────────────────────────────────────────────────────────
-pip3 install --break-system-packages smbus2 vl53l4cd pijuice
 
-# ── 3. Enable I2C ─────────────────────────────────────────────────────────────
+
+# ── 2. Enable I2C ─────────────────────────────────────────────────────────────
 sudo raspi-config nonint do_i2c 0
 # Also ensure 100 kHz I2C speed (safe for 8 sensors on long wires)
 if ! grep -q "dtparam=i2c_arm_baudrate" /boot/firmware/config.txt; then
     echo "dtparam=i2c_arm_baudrate=100000" | sudo tee -a /boot/firmware/config.txt
 fi
 
-# ── 4. Create data fallback directory ─────────────────────────────────────────
+# ── 3. Create data fallback directory ─────────────────────────────────────────
 mkdir -p /home/pi/infiltrometer_data
 
-# ── 5. Copy app to /home/pi/infiltrometer ────────────────────────────────────
+# ── 4. Copy app to /home/pi/infiltrometer and setup venv ────────────────────
 DEST=/home/pi/infiltrometer
 mkdir -p "$DEST"
-cp *.py "$DEST/"
-chmod +x "$DEST/main.py"
+if [ "$PWD" != "$DEST" ]; then
+    rsync -a --ignore-existing *.py "$DEST/"
+    chmod +x "$DEST/main.py"
+fi
 
-# ── 6. Autostart on boot (via systemd, not cron, so GUI has display access) ──
-SERVICE_FILE=/etc/systemd/system/infiltrometer.service
-sudo tee "$SERVICE_FILE" > /dev/null <<EOF
-[Unit]
-Description=Infiltrometer Controller GUI
-After=graphical.target
-Wants=graphical.target
+# Create and populate local venv inside the destination directory
+if [ ! -d "$DEST/venv" ]; then
+    python3 -m venv --system-site-packages "$DEST/venv"
+fi
+"$DEST/venv/bin/pip" install smbus2 adafruit-circuitpython-vl53l4cd
 
-[Service]
-User=pi
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/pi/.Xauthority
-WorkingDirectory=/home/pi/infiltrometer
-ExecStart=/usr/bin/python3 /home/pi/infiltrometer/main.py
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=graphical.target
+# ── 5. Autostart on boot (via desktop autostart) ─────────────────────────────
+mkdir -p /home/pi/.config/autostart
+mkdir -p /home/pi/Desktop
+DESKTOP_FILE=/home/pi/.config/autostart/infiltrometer.desktop
+cat > "$DESKTOP_FILE" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Infiltrometer Controller
+Exec=lxterminal --geometry=120x40 -e bash -c "/home/pi/infiltrometer/venv/bin/python /home/pi/infiltrometer/main.py; echo 'App closed or crashed.'; read -p 'Press Enter to close'"
+Path=/home/pi/infiltrometer
+Icon=/home/pi/infiltrometer/logo.png
+Terminal=false
+X-GNOME-Autostart-enabled=true
 EOF
+chmod +x "$DESKTOP_FILE"
 
-sudo systemctl daemon-reload
-sudo systemctl enable infiltrometer.service
+# Copy shortcut to Desktop for manual launch
+cp "$DESKTOP_FILE" /home/pi/Desktop/infiltrometer.desktop
+chmod +x /home/pi/Desktop/infiltrometer.desktop
 echo ""
 echo "=== Setup complete ==="
 echo "Reboot to start the application automatically."
-echo "To start now: sudo systemctl start infiltrometer"
-echo "To view logs: journalctl -u infiltrometer -f"
+echo "To view logs anytime: tail -f /home/pi/infiltrometer.log"

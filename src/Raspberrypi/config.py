@@ -12,25 +12,31 @@ VL53L4CD_DEFAULT_ADDR = 0x29
 # Assigned addresses for each sensor (0x2A – 0x31 avoids PiJuice at 0x14)
 SENSOR_ADDRESSES = [0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31]
 
-NUM_SENSORS = 8
+MAX_SENSORS = 8          # hard hardware limit (8 XSHUT lines on MCP23017)
+NUM_SENSORS = 8          # Default to 6 sensors for field conditions
 
 # ── MCP23017 registers ────────────────────────────────────────────────────────
 # BANK=0 (default): registers interleaved
-MCP_IODIRA   = 0x00   # Direction register port A (XSHUT outputs)
-MCP_IODIRB   = 0x01   # Direction register port B (GPIO1 inputs)
+MCP_IODIRA   = 0x00   # Direction register port A (GPIO1 inputs)
+MCP_IODIRB   = 0x01   # Direction register port B (XSHUT outputs)
 MCP_GPPUA    = 0x0C   # Pull-up port A
 MCP_GPPUB    = 0x0D   # Pull-up port B
-MCP_GPIOA    = 0x12   # Read/write port A
-MCP_GPIOB    = 0x13   # Read/write port B (GPIO1 interrupt lines)
+MCP_GPIOA    = 0x12   # Read/write port A (GPIO1 interrupt lines)
+MCP_GPIOB    = 0x13   # Read/write port B
 MCP_OLATA    = 0x14   # Output latch port A
+MCP_OLATB    = 0x15   # Output latch port B (XSHUT outputs)
 
 # ── Measurement ───────────────────────────────────────────────────────────────
-# Available intervals in seconds (shown in GUI dropdown)
-MEASUREMENT_INTERVALS = [1, 2, 5, 10, 30, 60]
+# Available intervals in seconds (shown in GUI dropdown, 0 = Max speed)
+MEASUREMENT_INTERVALS = [0, 1, 2, 5, 10, 30, 60]
 DEFAULT_INTERVAL = 5   # seconds
 
 # Distance threshold (mm) below which a sensor raises a "low water" warning
-LOW_WATER_THRESHOLD_MM = 20
+LOW_WATER_THRESHOLD_MM = 400
+
+# Steady State Detection
+STEADY_STATE_WINDOW_S = 30
+STEADY_STATE_TOLERANCE_MM = 1.0
 
 # ── Data logging ──────────────────────────────────────────────────────────────
 USB_MOUNT_PATH = "/media/pi"       # RPi OS auto-mounts USB sticks here
