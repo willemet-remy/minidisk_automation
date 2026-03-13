@@ -17,6 +17,7 @@ from PyQt5.QtGui import QFont, QColor, QTextCursor
 
 import serial
 import serial.tools.list_ports
+import pyqtgraph as pg
 
 NUM_SENSORS = 6
 SLOPE_WINDOW_SIZE = 10  # Calculate slope over the last 10 measurements
@@ -116,8 +117,10 @@ class MinidiskApp(QMainWindow):
         self.history_val  = [deque(maxlen=SLOPE_WINDOW_SIZE) for _ in range(NUM_SENSORS)]
         self.history_slopes = [deque(maxlen=VARIATION_WINDOW) for _ in range(NUM_SENSORS)]
         
+        self.pending_observations = [None] * NUM_SENSORS
+        
         # Track per-sensor pause state
-        self.sensor_paused = [False] * NUM_SENSORS
+        self.sensor_paused = [True] * NUM_SENSORS
         self.measurement_active = False
         
         self.init_ui()
@@ -184,6 +187,13 @@ class MinidiskApp(QMainWindow):
         
         self.le_tensions = []
         
+        self.plots = []
+        self.curves_data = []
+        self.curves_reg = []
+        
+        self.le_observations = []
+        self.btn_observations = []
+        
         for i in range(NUM_SENSORS):
             box = QGroupBox(f"Sensor {i+1}")
             bl = QVBoxLayout()
@@ -198,28 +208,64 @@ class MinidiskApp(QMainWindow):
             self.le_tensions.append(le_t)
             bl.addLayout(tension_layout)
             
+            # Observation Input
+            obs_layout = QHBoxLayout()
+            obs_layout.addWidget(QLabel("Observed Height:"))
+            le_obs = QLineEdit()
+            le_obs.setMaximumWidth(60)
+            le_obs.setPlaceholderText("cm")
+            obs_layout.addWidget(le_obs)
+            
+            btn_obs = QPushButton("Log")
+            btn_obs.setMaximumWidth(40)
+            btn_obs.clicked.connect(lambda checked, idx=i: self.log_observation(idx))
+            obs_layout.addWidget(btn_obs)
+            
+            self.le_observations.append(le_obs)
+            self.btn_observations.append(btn_obs)
+            bl.addLayout(obs_layout)
+            
+            # Info row Layout
+            info_layout = QHBoxLayout()
+            
             lbl_val = QLabel("0.00 cmH₂O")
-            lbl_val.setFont(QFont("Arial", 16, QFont.Bold))
+            lbl_val.setFont(QFont("Arial", 12, QFont.Bold))
             lbl_val.setAlignment(Qt.AlignCenter)
             self.lbl_cm.append(lbl_val)
+            info_layout.addWidget(lbl_val)
             
             lbl_s = QLabel("Slope: --")
             lbl_s.setAlignment(Qt.AlignCenter)
             self.lbl_slope.append(lbl_s)
+            info_layout.addWidget(lbl_s)
             
             lbl_c = QLabel("Stability: --")
             lbl_c.setAlignment(Qt.AlignCenter)
             self.lbl_certitude.append(lbl_c)
+            info_layout.addWidget(lbl_c)
             
-            btn_sp = QPushButton("Active")
-            btn_sp.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+            plot = pg.PlotWidget(title=f"S{i+1} H₂O")
+            plot.setLabel('left', 'cmH2O')
+            plot.setLabel('bottom', 'Time (s)')
+            plot.showGrid(x=True, y=True)
+            plot.setBackground('w')
+            plot.setMinimumHeight(200) # Increased height
+            
+            curve_data = plot.plot(pen=pg.mkPen('b', width=2), name="Measurement")
+            curve_reg = plot.plot(pen=pg.mkPen('r', width=2, style=Qt.DashLine), name="Regression")
+            
+            self.plots.append(plot)
+            self.curves_data.append(curve_data)
+            self.curves_reg.append(curve_reg)
+            
+            btn_sp = QPushButton("Paused")
+            btn_sp.setStyleSheet("background-color: #f1c40f; color: black; font-weight: bold;")
             btn_sp.clicked.connect(lambda checked, idx=i: self.toggle_sensor_pause(idx))
             btn_sp.setEnabled(False)
             self.btn_sensor_pause.append(btn_sp)
             
-            bl.addWidget(lbl_val)
-            bl.addWidget(lbl_s)
-            bl.addWidget(lbl_c)
+            bl.addLayout(info_layout)
+            bl.addWidget(plot)
             bl.addWidget(btn_sp)
             box.setLayout(bl)
             
@@ -229,17 +275,6 @@ class MinidiskApp(QMainWindow):
         sensor_group.setLayout(self.sensor_grid)
         main_layout.addWidget(sensor_group)
         
-        # --- Debug Console ---
-        debug_group = QGroupBox("Debug Console")
-        debug_layout = QVBoxLayout()
-        self.txt_debug = QTextEdit()
-        self.txt_debug.setReadOnly(True)
-        self.txt_debug.setMaximumHeight(150)
-        self.txt_debug.setStyleSheet("background-color: #f4f4f4; font-family: monospace; font-size: 11px;")
-        debug_layout.addWidget(self.txt_debug)
-        debug_group.setLayout(debug_layout)
-        main_layout.addWidget(debug_group)
-        
     def refresh_ports(self):
         self.cb_ports.clear()
         ports = serial.tools.list_ports.comports()
@@ -248,8 +283,7 @@ class MinidiskApp(QMainWindow):
             
     def log_debug(self, msg):
         time_str = datetime.now().strftime("%H:%M:%S")
-        self.txt_debug.append(f"[{time_str}] {msg}")
-        self.txt_debug.moveCursor(QTextCursor.End)
+        print(f"[{time_str}] {msg}")
             
     def toggle_connection(self):
         if self.serial_thread and self.serial_thread.isRunning():
@@ -294,6 +328,13 @@ class MinidiskApp(QMainWindow):
             self.cb_ports.setEnabled(True)
             self.btn_refresh.setEnabled(True)
 
+    def log_observation(self, idx):
+        val = self.le_observations[idx].text().strip()
+        if val:
+            self.pending_observations[idx] = val
+            self.le_observations[idx].clear()
+            self.log_debug(f"Sensor {idx+1} Manual Observation Logged: {val} cm")
+
     def toggle_sensor_pause(self, idx):
         self.sensor_paused[idx] = not self.sensor_paused[idx]
         if self.sensor_paused[idx]:
@@ -306,6 +347,12 @@ class MinidiskApp(QMainWindow):
             self.btn_sensor_pause[idx].setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
             self.le_tensions[idx].setEnabled(False) # Lock tension
             self.log_debug(f"Sensor {idx+1} Resumed.")
+            # Clear graph when resuming
+            self.history_time[idx].clear()
+            self.history_val[idx].clear()
+            self.history_slopes[idx].clear()
+            self.curves_data[idx].setData([], [])
+            self.curves_reg[idx].setData([], [])
             
     def start_measurement(self):
         if not self.serial_thread or not self.serial_thread.isRunning():
@@ -323,7 +370,7 @@ class MinidiskApp(QMainWindow):
             # Header
             header = ["timestamp_ms", "plot_name"]
             for i in range(NUM_SENSORS):
-                header.extend([f"S{i+1}_tension", f"S{i+1}_raw_V", f"S{i+1}_pressure_kPa", f"S{i+1}_cmH2O"])
+                header.extend([f"S{i+1}_tension", f"S{i+1}_raw_V", f"S{i+1}_pressure_kPa", f"S{i+1}_cmH2O", f"S{i+1}_obs_height_cm"])
             self.csv_writer.writerow(header)
             self.log_debug(f"Started Measurement. Logging to: {filename}")
         except Exception as e:
@@ -338,14 +385,14 @@ class MinidiskApp(QMainWindow):
         self.le_plot.setEnabled(False)
         
         for i in range(NUM_SENSORS):
-            self.le_tensions[i].setEnabled(False)
-            self.sensor_paused[i] = False
             self.btn_sensor_pause[i].setEnabled(True)
-            self.btn_sensor_pause[i].setText("Active")
-            self.btn_sensor_pause[i].setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+            self.pending_observations[i] = None
+            self.le_observations[i].clear()
             self.history_time[i].clear()
             self.history_val[i].clear()
             self.history_slopes[i].clear()
+            self.curves_data[i].setData([], [])
+            self.curves_reg[i].setData([], [])
             self.lbl_certitude[i].setStyleSheet("color: black;")
             
     def stop_measurement(self):
@@ -378,10 +425,16 @@ class MinidiskApp(QMainWindow):
             row = [elapsed_ms, self.le_plot.text()]
             for i in range(NUM_SENSORS):
                 tension_val = self.le_tensions[i].text().strip()
+                
+                obs_val = ""
+                if self.pending_observations[i] is not None:
+                    obs_val = self.pending_observations[i]
+                    self.pending_observations[i] = None
+                    
                 if self.sensor_paused[i]:
-                    row.extend([tension_val, "", "", ""]) # Blanks for paused sensors
+                    row.extend([tension_val, "", "", "", obs_val]) # Blanks for paused sensors
                 else:
-                    row.extend([tension_val, raw[i], p[i], cm[i]])
+                    row.extend([tension_val, raw[i], p[i], cm[i], obs_val])
             self.csv_writer.writerow(row)
             self.csv_file.flush()
             
@@ -396,9 +449,21 @@ class MinidiskApp(QMainWindow):
             self.history_time[i].append(t_sec)
             self.history_val[i].append(cm[i])
             
+            self.curves_data[i].setData(list(self.history_time[i]), list(self.history_val[i]))
+            
             if len(self.history_time[i]) >= SLOPE_WINDOW_SIZE:
                 slope, r_sq = calculate_linear_regression(self.history_time[i], self.history_val[i])
                 self.lbl_slope[i].setText(f"Slope: {slope:.3f} cm/s")
+                
+                # Draw regression line
+                start_x = self.history_time[i][0]
+                end_x = self.history_time[i][-1]
+                mean_x = sum(self.history_time[i]) / len(self.history_time[i])
+                mean_y = sum(self.history_val[i]) / len(self.history_val[i])
+                c = mean_y - slope * mean_x
+                start_y = slope * start_x + c
+                end_y = slope * end_x + c
+                self.curves_reg[i].setData([start_x, end_x], [start_y, end_y])
                 
                 self.history_slopes[i].append(slope)
                 
