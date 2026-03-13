@@ -4,6 +4,12 @@
 import logging
 import os
 import sys
+import getpass
+
+# ── User check ────────────────────────────────────────────────────────────────
+if getpass.getuser() != "pi":
+    print("Error: Infiltrometer Controller must be run as the 'pi' user.", file=sys.stderr)
+    sys.exit(1)
 
 # ── Qt platform detection ─────────────────────────────────────────────────────
 # On the Pi, if no X display is available (e.g. booted to console or SSH),

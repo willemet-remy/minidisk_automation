@@ -94,17 +94,17 @@ class VirtualKeyboard(QObject):
 
         # ── Text display ──
         self._lbl = QLabel(self._text or " ")
-        self._lbl.setMinimumWidth(340)
+        self._lbl.setMinimumWidth(400)
         self._lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._lbl.setStyleSheet(f"""
             QLabel {{
                 background-color: #1E2A3A;
                 color: {COLOR_TEXT};
                 border: 1px solid #3A4A5C;
-                border-radius: 5px;
-                padding: 6px 10px;
-                font-size: 16px;
-                min-height: 32px;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-size: 22px;
+                min-height: 48px;
             }}
         """)
         root.addWidget(self._lbl)
@@ -115,11 +115,11 @@ class VirtualKeyboard(QObject):
                 background-color: #2C3E50;
                 color: {COLOR_TEXT};
                 border: 1px solid #3A4A5C;
-                border-radius: 5px;
-                font-size: 15px;
+                border-radius: 8px;
+                font-size: 20px;
                 font-weight: bold;
-                min-width: 36px;
-                min-height: 36px;
+                min-width: 48px;
+                min-height: 48px;
                 padding: 0;
             }}
             QPushButton:pressed {{ background-color: {COLOR_ACCENT}; }}
@@ -129,11 +129,11 @@ class VirtualKeyboard(QObject):
                 background-color: #1E3A52;
                 color: {COLOR_TEXT};
                 border: 1px solid #3A4A5C;
-                border-radius: 5px;
-                font-size: 13px;
+                border-radius: 8px;
+                font-size: 16px;
                 font-weight: bold;
-                min-height: 36px;
-                padding: 0 10px;
+                min-height: 48px;
+                padding: 0 14px;
             }}
             QPushButton:pressed {{ background-color: {COLOR_ACCENT}; }}
         """
@@ -181,11 +181,11 @@ class VirtualKeyboard(QObject):
                 background-color: {COLOR_ACCENT};
                 color: white;
                 border: none;
-                border-radius: 5px;
-                font-size: 13px;
+                border-radius: 8px;
+                font-size: 16px;
                 font-weight: bold;
-                min-height: 36px;
-                padding: 0 14px;
+                min-height: 48px;
+                padding: 0 20px;
             }}
             QPushButton:pressed {{ background-color: #1A9C55; }}
         """)
@@ -199,11 +199,11 @@ class VirtualKeyboard(QObject):
                 background-color: {COLOR_ERROR};
                 color: white;
                 border: none;
-                border-radius: 5px;
-                font-size: 13px;
+                border-radius: 8px;
+                font-size: 16px;
                 font-weight: bold;
-                min-height: 36px;
-                padding: 0 10px;
+                min-height: 48px;
+                padding: 0 16px;
             }}
             QPushButton:pressed {{ background-color: #A00; }}
         """)
@@ -223,6 +223,9 @@ class VirtualKeyboard(QObject):
                 geo.y() + (geo.height() - dlg.height()) // 2,
             )
 
+        # Force keyboard dialog to completely steal focus to prevent the background freeze bug.
+        # It's better than Qt.FramelessWindowHint | Qt.Dialog returning without event loop clearing on touchscreen 
+        dlg.setWindowModality(Qt.ApplicationModal)
         result = dlg.exec_()
         return self._text if result == QDialog.Accepted else None
 
@@ -636,7 +639,6 @@ class MainWindow(QMainWindow):
         self._worker_thread = None
         self._start_time = None
         self._row_count = 0
-        self._battery_tick = 30  # Counter for 30s battery update interval
         self._sensor_online: list[bool] = [False] * MAX_SENSORS
         from config import NUM_SENSORS
         self._num_sensors = NUM_SENSORS  # read from config
@@ -657,7 +659,7 @@ class MainWindow(QMainWindow):
 
     def _setup_window(self):
         self.setWindowTitle(WINDOW_TITLE)
-        self.setFixedSize(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.setMinimumSize(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.setWindowFlags(Qt.FramelessWindowHint)
 
         palette = QPalette()
@@ -681,7 +683,7 @@ class MainWindow(QMainWindow):
 
     def _build_header(self) -> QWidget:
         header = QFrame()
-        header.setFixedHeight(56)
+        header.setFixedHeight(72)
         header.setStyleSheet(
             f"background-color: {COLOR_PANEL}; border-bottom: 1px solid #3A4A5C;"
         )
@@ -695,12 +697,12 @@ class MainWindow(QMainWindow):
         self.edit_folder = TappableLineEdit(main_window_ref=self)
         self.edit_folder.setPlaceholderText("session_name")
         self.edit_folder.setReadOnly(True)   # prevent native keyboard from popping up
-        self.edit_folder.setFixedWidth(140)
+        self.edit_folder.setFixedWidth(180)
         self.edit_folder.setStyleSheet(f"""
             QLineEdit {{
                 background-color: #1E2A3A; color: {COLOR_TEXT};
-                border: 1px solid #3A4A5C; border-radius: 4px;
-                padding: 3px 6px; font-size: 12px;
+                border: 1px solid #3A4A5C; border-radius: 6px;
+                padding: 6px 10px; font-size: 16px;
             }}
         """)
         layout.addWidget(lbl_f)
@@ -713,14 +715,15 @@ class MainWindow(QMainWindow):
         lbl_i.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 11px;")
         self.combo_interval = QComboBox()
         for s in MEASUREMENT_INTERVALS:
-            self.combo_interval.addItem(f"{s} s", s)
+            label = "Max" if s == 0 else f"{s} s"
+            self.combo_interval.addItem(label, s)
         self.combo_interval.setCurrentIndex(MEASUREMENT_INTERVALS.index(DEFAULT_INTERVAL))
-        self.combo_interval.setFixedWidth(72)
+        self.combo_interval.setFixedWidth(90)
         self.combo_interval.setStyleSheet(f"""
             QComboBox {{
                 background-color: #1E2A3A; color: {COLOR_TEXT};
-                border: 1px solid #3A4A5C; border-radius: 4px;
-                padding: 3px; font-size: 12px;
+                border: 1px solid #3A4A5C; border-radius: 6px;
+                padding: 6px; font-size: 16px;
             }}
             QComboBox QAbstractItemView {{
                 background-color: #1E2A3A; color: {COLOR_TEXT};
@@ -741,7 +744,7 @@ class MainWindow(QMainWindow):
 
         # ── Global Start All / Stop All (Aligned Right) ──
         self.btn_global = QPushButton("▶  Start All")
-        self.btn_global.setFixedSize(120, 38)
+        self.btn_global.setFixedSize(140, 48)
         self.btn_global.setEnabled(True)   # always enabled; init happens on press
         self.btn_global.setStyleSheet(self._btn_style(COLOR_START_BTN))
         self.btn_global.clicked.connect(self._on_global_toggle)
@@ -750,12 +753,25 @@ class MainWindow(QMainWindow):
         layout.addSpacing(6)
         
         self.btn_calibrate = QPushButton("🔧 Calibrate")
-        self.btn_calibrate.setFixedSize(110, 38)
+        self.btn_calibrate.setFixedSize(130, 48)
         self.btn_calibrate.setStyleSheet(self._btn_style("#2C3E50"))
         self.btn_calibrate.clicked.connect(lambda: self._on_calibrate())
         layout.addWidget(self.btn_calibrate)
 
         layout.addSpacing(10)
+        
+        self.btn_close = QPushButton("✖")
+        self.btn_close.setFixedSize(48, 48)
+        self.btn_close.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent; color: {COLOR_ERROR};
+                border-radius: 6px; font-size: 16px; font-weight: bold;
+                border: 2px solid {COLOR_ERROR};
+            }}
+            QPushButton:pressed {{ background-color: {COLOR_ERROR}; color: white; }}
+        """)
+        self.btn_close.clicked.connect(self.close)
+        layout.addWidget(self.btn_close)
 
         return header
 
@@ -820,9 +836,17 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.lbl_rows)
 
+        lbl_mcp = QLabel("MCP:")
+        lbl_mcp.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 11px;")
+        layout.addWidget(lbl_mcp)
+
+        self.lbl_mcp_status = QLabel("?")
+        self.lbl_mcp_status.setStyleSheet(f"color: {COLOR_TEXT_DIM}; font-size: 11px; font-weight: bold;")
+        layout.addWidget(self.lbl_mcp_status)
+
         layout.addSpacing(16)
-        
-        self.lbl_online_count = QLabel("Online: 0/0")
+
+        self.lbl_online_count = QLabel("Sensors: 0/0")
         self.lbl_online_count.setStyleSheet(
             f"color: {COLOR_TEXT_DIM}; font-size: 11px;"
         )
@@ -835,14 +859,6 @@ class MainWindow(QMainWindow):
             f"color: {COLOR_WARNING}; font-size: 11px;"
         )
         layout.addWidget(self.lbl_warnings)
-        
-        layout.addSpacing(16)
-        
-        self.lbl_battery = QLabel("🔋 ---%")
-        self.lbl_battery.setStyleSheet(
-            f"color: {COLOR_TEXT_DIM}; font-size: 11px; font-weight: bold;"
-        )
-        layout.addWidget(self.lbl_battery)
         
         layout.addSpacing(16)
 
@@ -1138,6 +1154,8 @@ class MainWindow(QMainWindow):
             remaining = interval - elapsed
             if remaining > 0:
                 time.sleep(remaining)
+            else:
+                time.sleep(0.01)  # prevent 100% CPU lockup if read_all doesn't naturally block
 
     # ── Clock ─────────────────────────────────────────────────────────────────
 
@@ -1149,20 +1167,18 @@ class MainWindow(QMainWindow):
             self.lbl_elapsed.setText(f"Elapsed: {h:02d}:{m:02d}:{s:02d}")
         
         self._update_online_count()
-        
-        # Only update battery every 30 seconds to minimize I2C traffic
-        self._battery_tick += 1
-        
-        if self._battery_tick % 5 == 0:
-            self._update_usb_status()
-            
-        if self._battery_tick >= 30:
-            self._update_battery()
-            self._battery_tick = 0
+        self._update_usb_status()
 
     def _update_online_count(self):
         active = sum(1 for i in range(self._num_sensors) if getattr(self.tiles[i], '_online', False))
-        self.lbl_online_count.setText(f"Online: {active}/{self._num_sensors}")
+        self.lbl_online_count.setText(f"Sensors: {active}/{self._num_sensors}")
+        
+        if getattr(self.sm, '_mcp_available', False):
+            self.lbl_mcp_status.setText("✓")
+            self.lbl_mcp_status.setStyleSheet(f"color: {COLOR_OK}; font-size: 11px; font-weight: bold;")
+        else:
+            self.lbl_mcp_status.setText("✗")
+            self.lbl_mcp_status.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 11px; font-weight: bold;")
 
     def _on_usb_clicked(self):
         if getattr(self, '_usb_mounted_path', None):
@@ -1198,28 +1214,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _update_battery(self):
-        try:
-            from INA219 import INA219
-            from config import INA219_ADDR
-            if not hasattr(self, '_ina219'):
-                self._ina219 = INA219(addr=INA219_ADDR)
-            
-            bus_voltage = self._ina219.getBusVoltage_V()
-            # Formula from INA219.py example: (V - 3) / 1.2 * 100
-            pct = (bus_voltage - 3) / 1.2 * 100
-            pct = max(0, min(100, pct))
-            
-            self.lbl_battery.setText(f"🔋 {pct:3.1f}%")
-            color = (
-                COLOR_OK if pct > 20
-                else COLOR_WARNING if pct > 10
-                else COLOR_ERROR
-            )
-            self.lbl_battery.setStyleSheet(f"color: {color}; font-size: 10px;")
-        except Exception:
-            pass
-
     # ── Safe close ────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
@@ -1250,5 +1244,5 @@ def launch_gui(sensor_manager, data_logger):
     app.setPalette(palette)
 
     window = MainWindow(sensor_manager, data_logger)
-    window.show()
+    window.showFullScreen()
     sys.exit(app.exec_())

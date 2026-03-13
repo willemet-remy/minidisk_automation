@@ -192,10 +192,10 @@ class SensorManager:
     """
 
     # Boot timing constants (based on datasheet: tBOOT ≤ 1.2 ms)
-    _XSHUT_BOOT_WAIT_S     = 0.050   # 50 ms after XSHUT high — generous margin
-    _ADDR_CHANGE_WAIT_S    = 0.030   # 30 ms after address register write
-    _POST_INIT_WAIT_S      = 0.010   # 10 ms after init sequence
-    _XSHUT_DISABLE_WAIT_S  = 0.050   # 50 ms after XSHUT low — let bus settle
+    _XSHUT_BOOT_WAIT_S     = 0.150   # 150 ms after XSHUT high — extra margin for single-sensor loads
+    _ADDR_CHANGE_WAIT_S    = 0.050   # 50 ms after address register write
+    _POST_INIT_WAIT_S      = 0.020   # 20 ms after init sequence
+    _XSHUT_DISABLE_WAIT_S  = 0.100   # 100 ms after XSHUT low — let bus settle
 
     def __init__(self, num_sensors: int = MAX_SENSORS):
         self._num_sensors = max(1, min(num_sensors, MAX_SENSORS))
@@ -357,7 +357,7 @@ class SensorManager:
             self.sensors = [None] * self._num_sensors
 
         _cb(f"=== Starting initialisation for {self._num_sensors} sensor(s) ===")
-        _cb(f"  Driver mode: {'ST official ULD' if USE_ST_DRIVER else 'pure-Python register fallback'}")
+        _cb("  Driver mode: Adafruit VL53L4CD wrapper")
 
         # I2C scan to see what is already on the bus
         found = self.scan_i2c()
@@ -500,8 +500,6 @@ class SensorManager:
         """Runs calibration for a single sensor and saves to file."""
         if sensor_idx < 0 or sensor_idx >= len(self.sensors) or self.sensors[sensor_idx] is None:
             raise ValueError(f"Sensor {sensor_idx + 1} is not active")
-        if USE_ST_DRIVER:
-            raise RuntimeError("Calibration protocol not available in ST driver wrapper.")
             
         sensor = self.sensors[sensor_idx]
         

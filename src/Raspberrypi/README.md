@@ -154,6 +154,20 @@ timestamp, sensor_0_mm, ..., sensor_7_mm, tension_0_hPa, ..., tension_7_hPa, fau
 
 ---
 
+## Warnings & Status Codes
+
+When running the application, you may see warnings appear on the sensor tiles or the bottom panel.
+
+| Warning / Status | Cause | Solution / Check |
+|---|---|---|
+| `⚠ GPIO fault` | Sensor detected a hardware interrupt/fault on its GPIO1 line. | Check wiring, ensure sensor is clean. Sometimes caused by power fluctuations. |
+| `⚠ Low water!` | Distance measured is below `LOW_WATER_THRESHOLD_MM`. | Refill the water reservoir. |
+| `⚠ Warning: [Text]` | The VL53L4CD sensor returned a non-zero status code (e.g. Signal failure, Out-of-bounds). | Check that the target is within range (up to 1.2m), the plexiglass is clean, and there is no direct sunlight blinding the sensor. |
+| `Error` (Red dot) | Sensor completely stopped responding to I2C during measurement. | Check physical I2C (SDA/SCL) and power connections. |
+| `MCP: ✗` | The MCP23017 multiplexer was not found. | Only 1 sensor can be used in this fallback mode. Check MCP wiring if you need multiple sensors. |
+
+---
+
 ## Troubleshooting
 
 | Problem | Check |
@@ -161,8 +175,20 @@ timestamp, sensor_0_mm, ..., sensor_7_mm, tension_0_hPa, ..., tension_7_hPa, fau
 | Sensor not detected | Check XSHUT 10kΩ pull-down, verify SDA/SCL connections |
 | All sensors fail init | Check I2C enabled (`i2cdetect -y 1`), check 4.7kΩ pull-ups |
 | USB stick not found | Check `/media/pi/` for mount, try different USB stick |
-| Battery % not showing | Check INA219 wiring to I2C and `0x43` address |
 | GUI not starting | `journalctl -u infiltrometer -f` for logs |
+
+---
+
+## FAQ & Technical Details
+
+**What does the `mm` measurement represent?**
+The `mm` value represents the corrected, true distance from the VL53L4CD sensor surface to the water/target surface. During calibration, the system calculates the impact of the plexiglass cover and optical crosstalk, and applies this correction directly to the sensor's hardware registers. This ensures the output is the actual, calibrated physical distance from the sensor to the target, rather than just a raw reading with a software offset.
+
+**What is the communication delay between the sensor and the screen?**
+The sensor requires roughly 50ms of "timing budget" per measurement to confidently calculate the distance. After that, I2C retrieval and GUI rendering take < 10ms. Therefore, the physical delay from the water level changing to the screen updating is approximately **50–60 milliseconds** plus the interval time you selected in the top bar.
+
+**What is the advantage of lowering the I2C frequency?**
+The system configures the I2C bus to 100 kHz (Standard Mode) rather than 400 kHz (Fast Mode). When running 8 sensors over relatively long wires, higher frequencies can cause signal degradation, cross-talk, and data corruption (I2C errors). Lowering the frequency makes the communication extremely stable and immune to wire capacitance, without noticeably affecting the measuring rate since the sensor bottleneck is its 50ms light-integration time.
 
 ---
 

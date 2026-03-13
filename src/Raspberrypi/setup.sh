@@ -39,36 +39,30 @@ fi
 
 # Create and populate local venv inside the destination directory
 if [ ! -d "$DEST/venv" ]; then
-    python3 -m venv "$DEST/venv"
+    python3 -m venv --system-site-packages "$DEST/venv"
 fi
 "$DEST/venv/bin/pip" install smbus2 adafruit-circuitpython-vl53l4cd
 
-# ── 5. Autostart on boot (via systemd, not cron, so GUI has display access) ──
-SERVICE_FILE=/etc/systemd/system/infiltrometer.service
-sudo tee "$SERVICE_FILE" > /dev/null <<EOF
-[Unit]
-Description=Infiltrometer Controller GUI
-After=multi-user.target
-
-
-[Service]
-User=pi
-Type=idle
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/pi/.Xauthority
-WorkingDirectory=/home/pi/infiltrometer
-ExecStart=/home/pi/infiltrometer/venv/bin/python /home/pi/infiltrometer/main.py
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
+# ── 5. Autostart on boot (via desktop autostart) ─────────────────────────────
+mkdir -p /home/pi/.config/autostart
+mkdir -p /home/pi/Desktop
+DESKTOP_FILE=/home/pi/.config/autostart/infiltrometer.desktop
+cat > "$DESKTOP_FILE" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Infiltrometer Controller
+Exec=lxterminal --geometry=120x40 -e bash -c "/home/pi/infiltrometer/venv/bin/python /home/pi/infiltrometer/main.py; echo 'App closed or crashed.'; read -p 'Press Enter to close'"
+Path=/home/pi/infiltrometer
+Icon=/home/pi/infiltrometer/logo.png
+Terminal=false
+X-GNOME-Autostart-enabled=true
 EOF
+chmod +x "$DESKTOP_FILE"
 
-sudo systemctl daemon-reload
-sudo systemctl enable infiltrometer.service
+# Copy shortcut to Desktop for manual launch
+cp "$DESKTOP_FILE" /home/pi/Desktop/infiltrometer.desktop
+chmod +x /home/pi/Desktop/infiltrometer.desktop
 echo ""
 echo "=== Setup complete ==="
 echo "Reboot to start the application automatically."
-echo "To start now: sudo systemctl start infiltrometer"
-echo "To view logs: journalctl -u infiltrometer -f"
+echo "To view logs anytime: tail -f /home/pi/infiltrometer.log"
