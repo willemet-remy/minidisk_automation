@@ -16,11 +16,11 @@
 // ESP32-S3 DevKitC-1 defaults. Change these for another ESP32 Mini board.
 #define I2C_SDA_PIN 8
 #define I2C_SCL_PIN 9
-#define VL53_XSHUT_PIN 7
+#define VL53_XSHUT_PIN 6
 #define I2C_CLOCK_HZ 400000UL
 
 // Sampling interval. Deep sleep is used after each transmitted sample.
-#define SAMPLE_INTERVAL_SECONDS 60UL
+#define SAMPLE_INTERVAL_SECONDS 15UL
 #define VL53_TIMING_BUDGET_MS 50
 #define COMMAND_LISTEN_MS 700UL  // Node stays awake briefly after every status packet.
 #define START_MEASURING_AFTER_FLASH false
