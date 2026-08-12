@@ -125,22 +125,71 @@ static uint16_t readBatteryMillivolts() {
 #endif
 }
 
+static void scanVl53I2cBus() {
+  pinMode(VL53_XSHUT_PIN, OUTPUT);
+  digitalWrite(VL53_XSHUT_PIN, HIGH);  // LPn/XSHUT is active low.
+  delay(20);
+
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(100000UL);
+  Serial.printf("I2C scan: SDA=GPIO%d SCL=GPIO%d LPn=GPIO%d\n",
+                I2C_SDA_PIN, I2C_SCL_PIN, VL53_XSHUT_PIN);
+  bool foundAnyDevice = false;
+  for (uint8_t address = 1; address < 127; ++address) {
+    Wire.beginTransmission(address);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("I2C device found: 0x%02X%s\n", address,
+                    address == 0x29 ? " (VL53L4CD expected address)" : "");
+      foundAnyDevice = true;
+    }
+  }
+  if (!foundAnyDevice) Serial.println("I2C scan: no devices found");
+}
+
 static bool readDistance(MeasurementPacket &packet) {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN); Wire.setClock(I2C_CLOCK_HZ);
   VL53L4CD sensor(&Wire, VL53_XSHUT_PIN);
   sensor.begin(); sensor.VL53L4CD_On();
-  if (sensor.VL53L4CD_SensorInit() != VL53L4CD_ERROR_NONE ||
-      sensor.VL53L4CD_SetRangeTiming(VL53_TIMING_BUDGET_MS, 0) != VL53L4CD_ERROR_NONE ||
-      sensor.VL53L4CD_StartRanging() != VL53L4CD_ERROR_NONE) { sensor.VL53L4CD_Off(); return false; }
+  const auto initStatus = sensor.VL53L4CD_SensorInit();
+  if (initStatus != VL53L4CD_ERROR_NONE) {
+    Serial.printf("VL53 error: SensorInit=%d\n", static_cast<int>(initStatus));
+    sensor.VL53L4CD_Off();
+    return false;
+  }
+  const auto timingStatus = sensor.VL53L4CD_SetRangeTiming(VL53_TIMING_BUDGET_MS, 0);
+  if (timingStatus != VL53L4CD_ERROR_NONE) {
+    Serial.printf("VL53 error: SetRangeTiming=%d\n", static_cast<int>(timingStatus));
+    sensor.VL53L4CD_Off();
+    return false;
+  }
+  const auto startStatus = sensor.VL53L4CD_StartRanging();
+  if (startStatus != VL53L4CD_ERROR_NONE) {
+    Serial.printf("VL53 error: StartRanging=%d\n", static_cast<int>(startStatus));
+    sensor.VL53L4CD_Off();
+    return false;
+  }
   uint8_t ready = 0;
   const uint32_t deadline = millis() + VL53_TIMING_BUDGET_MS + 250;
   while (!ready && millis() < deadline) {
-    if (sensor.VL53L4CD_CheckForDataReady(&ready) != VL53L4CD_ERROR_NONE) break;
+    const auto readyStatus = sensor.VL53L4CD_CheckForDataReady(&ready);
+    if (readyStatus != VL53L4CD_ERROR_NONE) {
+      Serial.printf("VL53 error: CheckForDataReady=%d\n", static_cast<int>(readyStatus));
+      break;
+    }
     delay(5);
   }
   VL53L4CD_Result_t result = {};
-  const bool ok = ready && sensor.VL53L4CD_GetResult(&result) == VL53L4CD_ERROR_NONE;
-  if (ok) { packet.distance_mm = result.distance_mm; packet.range_status = result.range_status; if (result.range_status == 0) packet.flags |= 0x01; sensor.VL53L4CD_ClearInterrupt(); }
+  const auto resultStatus = ready ? sensor.VL53L4CD_GetResult(&result) : VL53L4CD_ERROR_NONE;
+  const bool ok = ready && resultStatus == VL53L4CD_ERROR_NONE;
+  if (ok) {
+    packet.distance_mm = result.distance_mm;
+    packet.range_status = result.range_status;
+    if (result.range_status == 0) packet.flags |= 0x01;
+    Serial.printf("VL53 result: distance=%u mm range_status=%u\n", result.distance_mm, result.range_status);
+    sensor.VL53L4CD_ClearInterrupt();
+  } else {
+    Serial.printf("VL53 error: ready=%u GetResult=%d\n", ready, static_cast<int>(resultStatus));
+  }
   sensor.VL53L4CD_StopRanging(); sensor.VL53L4CD_Off();
   return ok;
 }
@@ -153,6 +202,11 @@ static void sleepUntilNextSample() {
 
 void setup() {
   Serial.begin(115200); delay(250);
+#if VL53_I2C_DIAGNOSTIC
+  Serial.println("VL53 I2C diagnostic mode enabled");
+  scanVl53I2cBus();
+  return;
+#endif
   MeasurementPacket packet = {};
   packet.magic = PACKET_MAGIC; packet.version = PACKET_VERSION; packet.node_id = NODE_ID;
   strncpy(packet.node_name, NODE_NAME, sizeof(packet.node_name) - 1);
@@ -173,6 +227,11 @@ void setup() {
   if (SERIAL_DEBUG) Serial.printf("%s: %s\n", NODE_NAME, measuring ? "measuring" : "paused");
   sleepUntilNextSample();
 }
-void loop() {}
+void loop() {
+#if VL53_I2C_DIAGNOSTIC
+  delay(2000);
+  scanVl53I2cBus();
+#endif
+}
 
 #endif

@@ -19,11 +19,16 @@
 #define VL53_XSHUT_PIN 6
 #define I2C_CLOCK_HZ 400000UL
 
+// Temporary wiring test. With true, the node enables LPn and repeatedly scans
+// I2C at 100 kHz instead of starting ESP-NOW/ranging. Expect address 0x29.
+// Set back to false after the sensor is detected.
+#define VL53_I2C_DIAGNOSTIC false
+
 // Sampling interval. Deep sleep is used after each transmitted sample.
 #define SAMPLE_INTERVAL_SECONDS 15UL
 #define VL53_TIMING_BUDGET_MS 50
 #define COMMAND_LISTEN_MS 700UL  // Node stays awake briefly after every status packet.
-#define START_MEASURING_AFTER_FLASH false
+#define START_MEASURING_AFTER_FLASH true
 
 // The ST library uses the VL53L4CD's 8-bit I2C address (0x52 = 0x29 7-bit).
 #define VL53_DEFAULT_ADDRESS_8BIT 0x52
