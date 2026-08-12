@@ -1,5 +1,83 @@
 # Infiltrometer Controller — Documentation
 
+> **Wireless sensor-node update (2026):** Long I2C cables to remote VL53 sensors are not reliable. The supported next architecture is one battery-powered ESP32 + VL53L4CD at each measurement location, communicating with an ESP-NOW receiver near the Raspberry Pi. The complete, buildable node and receiver firmware plus wiring and commissioning instructions are in [src/Esp32/README.md](src/Esp32/README.md). The documentation below describes the original wired Raspberry Pi prototype.
+
+## Wireless ESP32 measurement system
+
+The current development direction is a wireless system with one local VL53L4CD per ESP32 node. I2C remains inside each node enclosure (ideally under 20 cm); ESP-NOW replaces the long I2C cable. A USB-powered ESP32 receiver is connected to a computer running the acquisition application.
+
+```
+LiPo -> protected 3.3 V regulator -> ESP32 node <--- short I2C ---> VL53L4CD
+                                      |
+                                      | ESP-NOW, same radio channel
+                                      v
+                         ESP32 receiver -> USB serial -> computer application
+```
+
+### Included software
+
+| Component | Location | Purpose |
+|---|---|---|
+| ESP32 node + receiver firmware | [src/Esp32](src/Esp32) | VL53L4CD measurement, deep sleep, ESP-NOW communication, and control relay. |
+| Python acquisition application | [src/Computer](src/Computer) | Live monitoring, metadata, Start/Pause/Resume/End control, and CSV logging. |
+
+### Node hardware and wiring
+
+Each measurement node needs an ESP32-S3 Mini/DevKit, one 3.3 V-safe VL53L4CD breakout, a protected LiPo/Li-ion cell, and a regulator capable of powering an ESP32 radio burst. Do **not** connect a LiPo cell directly to the 3.3 V pins.
+
+The default configuration targets the ESP32-S3 DevKitC-1:
+
+| ESP32 pin | VL53L4CD pin | Purpose |
+|---|---|---|
+| 3V3 | VIN/VDD | Sensor supply |
+| GND | GND | Local common ground |
+| GPIO 8 | SDA | Local I2C data |
+| GPIO 9 | SCL | Local I2C clock |
+| GPIO 7 | XSHUT | Sensor standby during node deep sleep |
+
+Check whether the sensor breakout already contains I2C pull-ups before adding resistors. One effective pull-up pair, typically 4.7–10 kOhm to 3.3 V, is required per local bus.
+
+### Configure and flash the firmware
+
+Edit [src/Esp32/include/config.h](src/Esp32/include/config.h) before each node is flashed:
+
+1. Set a unique `NODE_ID`.
+2. Give it a permanent `NODE_NAME`, for example `MINIDISK_01`. This is the name shown by the application and saved to CSV.
+3. Verify the I2C/XSHUT pins for the exact ESP32 Mini board.
+4. Set `SAMPLE_INTERVAL_SECONDS` and, if fitted, configure the battery-voltage divider.
+
+Build the two PlatformIO environments from `src/Esp32`:
+
+```powershell
+# Keep this receiver connected to the computer.
+pio run -e receiver --target upload
+
+# Flash one sensor node; change NODE_ID and NODE_NAME for every physical node.
+pio run -e node --target upload
+```
+
+All nodes and the receiver must use the same ESP-NOW channel. Broadcast mode is enabled for commissioning. For a field deployment, the ESP32 documentation explains how to switch to unicast using the receiver MAC address.
+
+### Computer acquisition and CSV logging
+
+Connect the receiver through USB, then install and start the Python application:
+
+```powershell
+python -m pip install pyserial
+cd src\Computer
+python minidisk_acquisition.py
+```
+
+The application lets the user choose the receiver serial port, view the permanent sensor name, connection state, node mode, distance, battery voltage, and last received packet. Start a session by entering a measurement name, tension (hPa), and optional notes, then choose a CSV output location. Each saved row contains the metadata, sensor identity, distance, VL53 range status, battery voltage, and sender MAC address.
+
+Start, Pause/Resume, and End commands are sent from the application to the USB receiver and broadcast to the nodes. Since battery nodes sleep between samples, a command is applied during the listening window after the node's next wake-up; with the default configuration this can take up to 60 seconds. The application shows the state that the node actually reports.
+
+For full application instructions, see [src/Computer/README.md](src/Computer/README.md). For detailed ESP32 configuration, commissioning, and limitations, see [src/Esp32/README.md](src/Esp32/README.md).
+
+---
+
+## Original wired Raspberry Pi prototype
+
 ## Overview
 
 Controls 8 × VL53L4CD time-of-flight sensors connected to a Raspberry Pi via I2C.
