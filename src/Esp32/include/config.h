@@ -19,16 +19,31 @@
 #define VL53_XSHUT_PIN 6
 #define I2C_CLOCK_HZ 400000UL
 
+// LED Indicator Configuration (Opposite side header: GPIO 1)
+#define MEASUREMENT_LED_ENABLED true
+#define MEASUREMENT_LED_PIN 1
+#define MEASUREMENT_LED_ACTIVE_HIGH true
+#define MEASUREMENT_LED_BLINK_INTERVAL_MS 500UL  // Slow blink interval (500ms ON / 500ms OFF)
+
+// Physical Button Configuration (Opposite side header: GPIO 2 to GND)
+#define BUTTON_ENABLED true
+#define BUTTON_PIN 2
+#define BUTTON_HOLD_TIME_MS 2000UL               // Must hold 2 seconds to start/stop measurement
+
+// Operating mode: false keeps ESP32 awake for continuous live measurement and instant button response
+#define USE_DEEP_SLEEP false
+#define SAMPLE_INTERVAL_MS 1000UL                // Sampling interval in active continuous mode
+
 // Temporary wiring test. With true, the node enables LPn and repeatedly scans
 // I2C at 100 kHz instead of starting ESP-NOW/ranging. Expect address 0x29.
 // Set back to false after the sensor is detected.
 #define VL53_I2C_DIAGNOSTIC false
 
-// Sampling interval. Deep sleep is used after each transmitted sample.
+// Sampling interval for deep sleep mode.
 #define SAMPLE_INTERVAL_SECONDS 15UL
 #define VL53_TIMING_BUDGET_MS 50
 #define COMMAND_LISTEN_MS 700UL  // Node stays awake briefly after every status packet.
-#define START_MEASURING_AFTER_FLASH true
+#define START_MEASURING_AFTER_FLASH false        // Start paused, waiting for button or computer START
 
 // The ST library uses the VL53L4CD's 8-bit I2C address (0x52 = 0x29 7-bit).
 #define VL53_DEFAULT_ADDRESS_8BIT 0x52

@@ -51,3 +51,18 @@ If you want to test the GUI without water or a real Arduino:
 2. It will tell you the mock port name (e.g. `/dev/pts/X`). Keep this running.
 3. Open a second terminal and run `python3 minidisk_app.py`.
 4. Select the mock port from the dropdown, connect, and hit Start. Watch the green steady-state indicators kick in automatically!
+
+## 6. Pressure-sensor calibration analysis
+
+`analyse_pressure_calibration.py` fits each sensor against the manually logged
+water-height observations in a calibration CSV and produces a graph with its
+linear equation, R², RMSE, and PASS/FAIL result. It uses the latest
+`minidisk_*Calibration*.csv` by default:
+
+```bash
+python analyse_pressure_calibration.py
+```
+
+Outputs are written to `calibration_analysis/`. A sensor passes by default when
+R² is at least 0.98, RMSE is at most 1 cm, and the calibration spans at least
+0.05 V. The thresholds can be overridden with the script options.
