@@ -1,265 +1,297 @@
-# Infiltrometer Controller — Documentation
+# 🌊 Slimme Minidisk — Automated Wireless Infiltrometer System
 
-> **Wireless sensor-node update (2026):** Long I2C cables to remote VL53 sensors are not reliable. The supported next architecture is one battery-powered ESP32 + VL53L4CD at each measurement location, communicating with an ESP-NOW receiver near the Raspberry Pi. The complete, buildable node and receiver firmware plus wiring and commissioning instructions are in [src/Esp32/README.md](src/Esp32/README.md). The documentation below describes the original wired Raspberry Pi prototype.
+[![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32-orange.svg)](https://platformio.org/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Wireless](https://img.shields.io/badge/Wireless-ESP--NOW%202.4GHz-brightgreen.svg)]()
+[![Sensor](https://img.shields.io/badge/Sensor-ST%20VL53L4CD%20ToF-informational.svg)](https://www.st.com/en/imaging-and-photonics-solutions/vl53l4cd.html)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Wireless ESP32 measurement system
+An automated, wireless, and modular field data acquisition system for **Mini Disk Infiltrometers** (Mariotte reservoir soil water infiltration measurements). 
 
-The current development direction is a wireless system with one local VL53L4CD per ESP32 node. I2C remains inside each node enclosure (ideally under 20 cm); ESP-NOW replaces the long I2C cable. A USB-powered ESP32 receiver is connected to a computer running the acquisition application.
+By mounting a compact **Time-of-Flight (ToF) distance sensor** cap onto the infiltrometer tube and streaming sub-millimeter water meniscus readings over **ESP-NOW** to a central receiver and desktop GUI, *Slimme Minidisk* eliminates manual stopwatch timing and visual meniscus reading errors, enabling simultaneous multi-location soil hydraulic conductivity ($K(h_0)$) campaigns.
+
+---
+
+## 📌 Schematic View & System Architecture
+
+<p align="center">
+  <img src="Figures/Schematic_view.png" alt="Slimme Minidisk Schematic View" width="850"/>
+</p>
+
+### How It Works
+
+1. **Infiltrometer Sensor Nodes (Senders)**:
+   - Each infiltrometer is fitted with a battery-powered sensor cap containing an **ESP32** microcontroller and an **STMicroelectronics VL53L4CD** Time-of-Flight infrared laser sensor.
+   - The sensor points downward into the Mariotte reservoir tube and continuously measures the distance to the water surface / meniscus with sub-millimeter precision.
+   - A physical button (2-second hold) and dual-blink/slow-blink LED indicator provide direct field control to start and pause measurements without opening a computer.
+   - Distance, battery voltage, and status packets are broadcast wirelessly in real time over **ESP-NOW** on the 2.4 GHz band.
+
+2. **Wireless USB Receiver**:
+   - A dedicated ESP32 receiver plugged into a laptop or field computer via USB.
+   - Listens for all incoming node packets within radio range (up to 100+ meters in open field) and manages an in-memory tracking table.
+   - Relays parsed data and scan results over USB Serial CDC at 115200 baud.
+
+3. **Desktop Acquisition Application (`minidisk_acquisition.py`)**:
+   - A dedicated 3-screen Python GUI (Tkinter + Matplotlib) designed for field campaigns:
+     - **Screen 1 (Sensor Selection)**: Discovers all active nodes, monitors signal/battery health, and lets the user check which sensors to record.
+     - **Screen 2 (Campaign Dialog)**: Configures and remembers Campaign names across locations (e.g. `Morteau_2026`), records point/spot identifiers (e.g. `Plot_A_point_1`), and initializes structured CSV logs.
+     - **Screen 3 (Live Multi-Sensor Curves)**: Displays individual real-time infiltration curves per sensor (with inverted Y-axis for intuitive water drop visualization) and provides dynamic per-sensor **suction tension ($h_0$) inputs in cm H₂O**.
+
+```mermaid
+flowchart TD
+    subgraph Infiltrometer Nodes ["Infiltrometer Sensor Nodes (Field Deployable)"]
+        node1["💧 Minidisk Node 01\nESP32 + VL53L4CD ToF\n(Tension: -2 cm H₂O)"]
+        node2["💧 Minidisk Node 02\nESP32 + VL53L4CD ToF\n(Tension: -5 cm H₂O)"]
+        nodeN["💧 Minidisk Node N\nESP32 + VL53L4CD ToF\n(Tension: -0.5 cm H₂O)"]
+    end
+
+    subgraph Central Station ["Field Base Station"]
+        receiver["📻 ESP32 USB Receiver\n(ESP-NOW Gateway)"]
+        app["💻 Python Acquisition GUI\n- Live Multi-Plot Curves\n- Per-Sensor Tension Input\n- Structured CSV Output"]
+    end
+
+    node1 -->|"ESP-NOW Broadcast (2.4 GHz)"| receiver
+    node2 -->|"ESP-NOW Broadcast (2.4 GHz)"| receiver
+    nodeN -->|"ESP-NOW Broadcast (2.4 GHz)"| receiver
+
+    receiver -->|"USB Serial CDC (115200 Baud)"| app
+```
+
+---
+
+## ✨ Key Features
+
+- **Zero-Router Field Wireless (ESP-NOW)**: No WiFi routers, hotspots, or pairing required in the field. Instant connection upon power-up.
+- **Sub-Millimeter Resolution**: ST VL53L4CD sensor provides high-speed, contactless distance measurements unaffected by water color or ambient light.
+- **Physical Push Button & LED State Machine**:
+  - **Power-On**: LED blinks twice on boot, then turns OFF into Standby.
+  - **Start/Pause**: Hold the push button for 2 seconds to toggle active measurement mode (prevents accidental clicks).
+  - **Measuring Indicator**: LED blinks slowly (1 Hz) while actively measuring.
+  - **Water Refill / Pause**: Pausing the node clears the live graph view while preserving all historical data in CSV.
+- **Interactive USB Diagnostic CLI**: Connect any node directly via USB cable to run self-tests, live I2C bus scans, sensor test reads, and pin checks.
+- **Full Field Campaign App**:
+  - Remembers campaign name to avoid repetitive typing across measurement spots.
+  - Independent tension settings per infiltrometer ($cm\text{ }H_2O$ / $hPa$) logged in real-time with each data point.
+  - Generates standardized CSV datasets ready for Zhang (1997) / Vandervaere (2000) infiltration analysis.
+
+---
+
+## 🛠️ Hardware & Pinout
+
+### Bill of Materials (BOM)
+
+| Component | Description / Specification | Quantity |
+|---|---|---|
+| **Microcontroller** | ESP32-C3 or ESP32-S3 DevKit / Mini | 1 per node + 1 receiver |
+| **Distance Sensor** | STMicroelectronics VL53L4CD ToF Breakout | 1 per node |
+| **Status LED** | 3mm or 5mm standard LED + 330Ω–1kΩ resistor | 1 per node |
+| **Push Button** | Momentary tactile push button | 1 per node |
+| **Power Supply** | 3.7V LiPo / 18650 cell + protected 3.3V LDO regulator | 1 per node |
+| **I2C Pull-up Resistors** | 4.7 kΩ – 10 kΩ resistors to 3.3V (if not on breakout) | 2 per node |
+| **3D Mount & Case** | Tube cap adapter & enclosure (in `Model/3D_print`) | 1 per node |
+| **Infiltrometer** | METER Group Mini Disk Infiltrometer | 1 per node |
+
+### Node Wiring & Pin Assignment
 
 ```
-LiPo -> protected 3.3 V regulator -> ESP32 node <--- short I2C ---> VL53L4CD
-                                      |
-                                      | ESP-NOW, same radio channel
-                                      v
-                         ESP32 receiver -> USB serial -> computer application
+        ESP32 DevKit (Top View)
+              USB-C Port
+    ┌───────────────────────────┐
+    │ [Left Header] [Right Header]│
+    │ 3.3V          GND         │ ◄── Common Ground (Sensor, LED, Button)
+    │ GND           ...         │
+    │ GPIO 6        ...         │
+    │ GPIO 8 (SDA)  GPIO 2      │ ◄── [BUTTON] Momentary push to GND (Hold 2s)
+    │ GPIO 9 (SCL)  GPIO 1      │ ◄── [LED] Measurement Indicator (via resistor)
+    └───────────────────────────┘
 ```
 
-### Included software
+| ESP32 Pin | Connected Component | Purpose | Wiring Note |
+|---|---|---|---|
+| **3.3V** | VL53L4CD `VIN` / `VDD` | Sensor Power | Regulated 3.3V supply |
+| **GND** | Sensor `GND`, LED (-), Button | Common Ground | Connected to common ground |
+| **GPIO 8** | VL53L4CD `SDA` | I2C Data | 4.7kΩ–10kΩ pull-up to 3.3V |
+| **GPIO 9** | VL53L4CD `SCL` | I2C Clock | 4.7kΩ–10kΩ pull-up to 3.3V |
+| **GPIO 6** | VL53L4CD `XSHUT` / `LPn` | Hardware Standby | Active-low chip enable |
+| **GPIO 1** | Measurement LED (+) | Status Indicator | Connected through 330Ω–1kΩ resistor to GND |
+| **GPIO 2** | Push Button | 2s Hold Start/Pause | Uses internal `INPUT_PULLUP`, switches to GND |
 
-| Component | Location | Purpose |
-|---|---|---|
-| ESP32 node + receiver firmware | [src/Esp32](src/Esp32) | VL53L4CD measurement, deep sleep, ESP-NOW communication, and control relay. |
-| Python acquisition application | [src/Computer](src/Computer) | Live monitoring, metadata, Start/Pause/Resume/End control, and CSV logging. |
+---
 
-### Node hardware and wiring
+## ⚡ Firmware Setup & Flashing
 
-Each measurement node needs an ESP32-S3 Mini/DevKit, one 3.3 V-safe VL53L4CD breakout, a protected LiPo/Li-ion cell, and a regulator capable of powering an ESP32 radio burst. Do **not** connect a LiPo cell directly to the 3.3 V pins.
+The firmware is built using **[PlatformIO](https://platformio.org/)**.
 
-The default configuration targets the ESP32-S3 DevKitC-1:
+### 1. Installation
 
-| ESP32 pin | VL53L4CD pin | Purpose |
-|---|---|---|
-| 3V3 | VIN/VDD | Sensor supply |
-| GND | GND | Local common ground |
-| GPIO 8 | SDA | Local I2C data |
-| GPIO 9 | SCL | Local I2C clock |
-| GPIO 7 | XSHUT | Sensor standby during node deep sleep |
+Install VS Code and the **PlatformIO IDE** extension (or PlatformIO CLI):
+```powershell
+python -m pip install platformio
+```
 
-Check whether the sensor breakout already contains I2C pull-ups before adding resistors. One effective pull-up pair, typically 4.7–10 kOhm to 3.3 V, is required per local bus.
+### 2. Configure Sensor Node Identity
 
-### Configure and flash the firmware
+Open [`src/Esp32/include/config.h`](src/Esp32/include/config.h) and set a unique `NODE_ID` and human-readable `NODE_NAME` for each physical sensor:
 
-Edit [src/Esp32/include/config.h](src/Esp32/include/config.h) before each node is flashed:
+```cpp
+#define NODE_ID 1
+#define NODE_NAME "MINIDISK_01"  // Set MINIDISK_02, MINIDISK_03, etc.
+#define ESPNOW_WIFI_CHANNEL 1    // Must match receiver channel
+```
 
-1. Set a unique `NODE_ID`.
-2. Give it a permanent `NODE_NAME`, for example `MINIDISK_01`. This is the name shown by the application and saved to CSV.
-3. Verify the I2C/XSHUT pins for the exact ESP32 Mini board.
-4. Set `SAMPLE_INTERVAL_SECONDS` and, if fitted, configure the battery-voltage divider.
+### 3. Flash Receiver & Nodes
 
-Build the two PlatformIO environments from `src/Esp32`:
+Connect your ESP32 board via USB data cable and run:
 
 ```powershell
-# Keep this receiver connected to the computer.
+cd src\Esp32
+
+# 1. Flash the USB Receiver (keep connected to computer):
 pio run -e receiver --target upload
 
-# Flash one sensor node; change NODE_ID and NODE_NAME for every physical node.
+# 2. Flash a Sensor Node (change NODE_ID/NAME before flashing each node):
 pio run -e node --target upload
 ```
 
-All nodes and the receiver must use the same ESP-NOW channel. Broadcast mode is enabled for commissioning. For a field deployment, the ESP32 documentation explains how to switch to unicast using the receiver MAC address.
+### 4. Interactive USB Diagnostic & Self-Test
 
-### Computer acquisition and CSV logging
+When plugged into a computer via USB, the node provides a self-test diagnostic report in the Serial Monitor (`115200` baud):
 
-Connect the receiver through USB, then install and start the Python application:
+```text
+╔═════════════════════════════════════════════════════════════════════════╗
+║       SLIMME MINIDISK - SENSOR NODE SELF-DIAGNOSTIC (ID 01)             ║
+╚═════════════════════════════════════════════════════════════════════════╝
+[SYSTEM] Node Name: MINIDISK_01 | Node ID: 1 | Firmware: v1
+[SYSTEM] ESP32 Chip Model: ESP32-C3 | Free Heap: 289788 bytes
+[HARDWARE] Measurement LED configured on GPIO 1 (Blinked 2x on boot)
+[HARDWARE] Button configured on GPIO 2 (State: RELEASED (OK) / Raw: 1)
+[I2C BUS] Pins: SDA=GPIO8, SCL=GPIO9, XSHUT=GPIO6, Speed=400 kHz
+
+[I2C] Scanning bus: SDA=GPIO8 SCL=GPIO9 XSHUT=GPIO6
+  ✓ I2C device found at address: 0x29 (VL53L4CD ToF Sensor Detected!)
+
+[SENSOR] Testing VL53L4CD connection... ✓ SUCCESS: Sensor initialized and ranging active!
+  ✓ Sample test reading: 145 mm (Status: 0)
+[WIRELESS] Initializing ESP-NOW radio... ✓ OK | MAC: 70:04:1D:XX:XX:XX | Channel: 1
+[WIRELESS] Broadcasting initial standby discovery packet... ✓ Sent.
+```
+
+Type any of the following interactive commands in the Serial Monitor:
+- `SCAN` or `I2C`: Run live I2C bus scanner.
+- `READ` or `DISTANCE`: Take an immediate single-shot distance sample.
+- `START` / `STOP`: Toggle measurement mode locally.
+- `LED`: Test flash indicator LED (3 blinks).
+- `STATUS`: Show uptime, sequence, battery, and pin config.
+
+---
+
+## 💻 Desktop Campaign Acquisition App
+
+### Install Dependencies & Launch
 
 ```powershell
-python -m pip install pyserial
+# Install required Python libraries
+python -m pip install pyserial matplotlib
+
+# Launch application
 cd src\Computer
 python minidisk_acquisition.py
 ```
 
-The application lets the user choose the receiver serial port, view the permanent sensor name, connection state, node mode, distance, battery voltage, and last received packet. Start a session by entering a measurement name, tension (hPa), and optional notes, then choose a CSV output location. Each saved row contains the metadata, sensor identity, distance, VL53 range status, battery voltage, and sender MAC address.
+### The 3-Screen Workflow
 
-Start, Pause/Resume, and End commands are sent from the application to the USB receiver and broadcast to the nodes. Since battery nodes sleep between samples, a command is applied during the listening window after the node's next wake-up; with the default configuration this can take up to 60 seconds. The application shows the state that the node actually reports.
+```
+┌───────────────────────────┐     ┌───────────────────────────┐     ┌───────────────────────────┐
+│   Screen 1: Discovery     │     │    Screen 2: Campaign     │     │      Screen 3: Live       │
+│  - Select Receiver Port   │ ──► │  - Campaign Name (remem.) │ ──► │  - Separate Curves/Sensor │
+│  - Scan Wireless Nodes    │     │  - Location Spot Name     │     │  - Inverted Water Drop    │
+│  - Check (☑) Active Nodes │     │  - Output CSV Destination │     │  - Live Tension (cm H₂O)  │
+└───────────────────────────┘     └───────────────────────────┘     └───────────────────────────┘
+```
 
-For full application instructions, see [src/Computer/README.md](src/Computer/README.md). For detailed ESP32 configuration, commissioning, and limitations, see [src/Esp32/README.md](src/Esp32/README.md).
+1. **Screen 1 — Sensor Discovery & Selection**:
+   - Plug the ESP32 receiver into your laptop, select the COM port, and click **Connect**.
+   - Click **`🔍 Scan for sensors`** to display all online nodes.
+   - Click the row checkboxes (**☑ / ☐**) to select which sensors will participate in the test.
+   - Click **▶ Start measurement with selected sensors**.
+
+2. **Screen 2 — Campaign & Location Dialog**:
+   - Enter or select the **Campaign Name** (the dropdown automatically remembers previously entered campaign names during the session).
+   - Enter the **Location / Spot** identifier (e.g. `Plot_North_Point_3`).
+   - Add optional session notes, click **OK**, and choose where to save the CSV.
+
+3. **Screen 3 — Live Multi-Sensor Measurement & Infiltration Curves**:
+   - Displays individual stacked Matplotlib plots for each active sensor.
+   - **Inverted Y-axis**: Plots distance going downwards as water drains into the soil, directly mirroring the physical water meniscus dropping.
+   - **Independent Suction Tension Inputs**: Adjust the applied infiltrometer suction tension ($cm\text{ }H_2O$) directly under each sensor at any time; the current tension value is synchronously tagged to every data point in the CSV.
+   - **Pause / Refill Awareness**: When a node is paused to refill water, its live graph clears and resets to $t=0$ for the new run, while all previous raw data remains safely stored in the CSV file.
+   - Click **⏹ End measurement & save CSV** when the experiment completes.
 
 ---
 
-## Original wired Raspberry Pi prototype
+## 📊 CSV Output Format
 
-## Overview
+Each measurement location produces a dedicated CSV file named:  
+`{campaign}_{location}_{YYYYMMDD_HHMMSS}.csv`
 
-Controls 8 × VL53L4CD time-of-flight sensors connected to a Raspberry Pi via I2C.
-XSHUT and GPIO1 lines are managed through an MCP23017 I2C GPIO expander.
-Measurements are logged to CSV on a USB stick.
-
----
-
-## Hardware Bill of Materials
-
-| Component | Purpose | Qty |
+| Column | Example | Description |
 |---|---|---|
-| Raspberry Pi Zero | Main controller | 1 |
-| Waveshare 7" Control Panel for Raspberry Pi 4 | User interface | 1 |
-| VL53L4CD breakout | Distance sensor | 8 |
-| MCP23017-E/SP (DIP-28) | XSHUT + GPIO1 I/O expander | 1 |
-| INA219 | Battery Voltage/Current I2C Monitor | 1 |
-| LiPo 3.7V ≥ 5000 mAh | Battery | 1 |
-| 4.7 kΩ resistor | I2C SDA/SCL pull-ups | 2 |
-| 10 kΩ resistor | XSHUT pull-downs | 8 |
-| 100 nF ceramic cap | Decoupling per sensor | 10 |
-| USB-A OTG adapter (micro USB) | USB stick access | 1 |
-| USB stick ≥ 16 GB | Data storage | 1 |
-| Micro SD ≥ 16 GB Class 10 | RPi OS | 1 |
+| `timestamp` | `2026-09-15T10:14:23` | ISO 8601 acquisition timestamp |
+| `campaign` | `Morteau_2026` | Campaign name |
+| `location` | `Plot_A_point_1` | Specific measurement spot/point |
+| `notes` | `Dry sandy loam, 20 cm depth` | User notes from dialog |
+| `sensor_name` | `MINIDISK_01` | Human-readable node identity |
+| `node_id` | `1` | Unique node hardware ID |
+| `distance_mm` | `142` | Measured distance from sensor to water meniscus (mm) |
+| `range_status` | `0` | VL53L4CD status code (`0` = Valid reading) |
+| `tension_cm_h2o` | `-2` | Infiltrometer suction tension setting in cm H₂O |
+| `battery_mv` | `3210` | Node battery voltage in millivolts |
+| `source_mac` | `70:04:1D:4B:82:1C` | Node ESP-NOW hardware MAC address |
 
 ---
 
-## Wiring
-
-### I2C Bus (all devices share SDA/SCL)
+## 📂 Repository Structure
 
 ```
-RPi GPIO2 (SDA, pin 3) ──┬── 4.7kΩ to 3.3V
-                          ├── MCP23017 pin 13 (SDA)
-                          └── All 8 × VL53L4CD SDA
-
-RPi GPIO3 (SCL, pin 5) ──┬── 4.7kΩ to 3.3V
-                          ├── MCP23017 pin 12 (SCL)
-                          └── All 8 × VL53L4CD SCL
-```
-
-### MCP23017 Address Pins
-
-```
-A0 (pin 15) → GND
-A1 (pin 16) → GND
-A2 (pin 17) → GND
-→ I2C address = 0x20
-RESET (pin 18) → 3.3V
-VDD (pin 28) → 3.3V
-VSS (pin 9)  → GND
-```
-
-### MCP23017 Port A → XSHUT Lines
-
-```
-GPA0 (pin 21) → XSHUT sensor 0   (+ 10kΩ to GND)
-GPA1 (pin 22) → XSHUT sensor 1   (+ 10kΩ to GND)
-GPA2 (pin 23) → XSHUT sensor 2   ...
-GPA3 (pin 24) → XSHUT sensor 3
-GPA4 (pin 25) → XSHUT sensor 4
-GPA5 (pin 26) → XSHUT sensor 5
-GPA6 (pin 27) → XSHUT sensor 6
-GPA7 (pin 28) → XSHUT sensor 7   (+ 10kΩ to GND)
-```
-
-### MCP23017 Port B → GPIO1 Lines
-
-```
-GPB0 (pin 1) → GPIO1 sensor 0   (open-drain, pulled up internally)
-GPB1 (pin 2) → GPIO1 sensor 1
-...
-GPB7 (pin 8) → GPIO1 sensor 7
-```
-
-### VL53L4CD per sensor
-
-```
-VDD   → 3.3V (+ 100nF cap to GND)
-GND   → GND
-SDA   → I2C bus
-SCL   → I2C bus
-XSHUT → MCP23017 GPA[n]
-GPIO1 → MCP23017 GPB[n]
+Slimme_minidisk/
+├── Figures/                     # Schematic views, hardware photos, and diagrams
+│   ├── Schematic_view.png       # Complete system overview figure
+│   └── Mariotte_Cylinder.gif    # Infiltrometer suction & flow animation
+├── Model/                       # 3D Mechanical CAD Files
+│   ├── 3D_print/                # Ready-to-print STL files for sensor caps & cases
+│   └── Fusion360/               # Parametric CAD models
+├── PCB_microcontroller/         # Electronics Design
+│   ├── PCB_sensor_V1..V4/       # KiCad schematics and PCB layout files
+│   └── Slimme_minidisk_BOM.xlsx # Bill of Materials
+├── src/
+│   ├── Computer/                # Desktop Acquisition Software
+│   │   ├── minidisk_acquisition.py # 3-Screen Python application (Tkinter + Matplotlib)
+│   │   └── README.md            # Software documentation
+│   └── Esp32/                   # ESP32 Firmware (PlatformIO)
+│       ├── include/config.h     # Node configuration (Pins, IDs, Channels)
+│       ├── src/main.cpp         # Node & Receiver firmware + USB Diagnostic CLI
+│       └── platformio.ini       # PlatformIO build environments
+└── README.md                    # Project documentation (this file)
 ```
 
 ---
 
-## I2C Address Map
+## 🔬 Scientific Infiltration Background
 
-| Address | Device |
-|---|---|
-| 0x14 | PiJuice HAT |
-| 0x20 | MCP23017 |
-| 0x2A | Sensor 0 (assigned at boot) |
-| 0x2B | Sensor 1 |
-| 0x2C | Sensor 2 |
-| 0x2D | Sensor 3 |
-| 0x2E | Sensor 4 |
-| 0x2F | Sensor 5 |
-| 0x30 | Sensor 6 |
-| 0x31 | Sensor 7 |
+The Mini Disk Infiltrometer measures soil hydraulic conductivity $K(h_0)$ under a prescribed negative pressure head (tension $h_0$). Cumulative infiltration $I(t)$ is calculated from water level drop in the Mariotte reservoir:
 
----
+$$I = C_1 t + C_2 \sqrt{t}$$
 
-## Software Installation
+Using the method of **Zhang (1997)**:
 
-1. Flash Raspberry Pi OS **with Desktop** (Bookworm 64-bit) to SD card.
-2. Boot, connect to network briefly (for apt).
-3. Copy the infiltrometer folder to the Pi:
-   `scp -r /home/remy/Documents/minidisk_automation/src/Raspberrypi remy@raspberrypi_ip:/Documents/minidisk`
-4. Run the setup script to create a local virtual environment (`venv`) and install dependencies:
-   ```bash
-   cd /path/to/infiltrometer
-   bash setup.sh
-   sudo reboot
-   ```
+$$K(h_0) = \frac{C_1}{A}$$
 
-After reboot, the GUI launches automatically on the touchscreen.
+where $C_1$ is the slope of cumulative infiltration vs. $\sqrt{t}$, and $A$ is a dimensionless factor relating the van Genuchten parameters of the soil type to the disk radius and suction tension $h_0$.
+
+With *Slimme Minidisk*, distance measurements $d(t)$ logged in the CSV are converted to cumulative infiltration volume and depth automatically, providing continuous, high-resolution infiltration curves without manual intervention.
 
 ---
 
-## File Structure
+## 📜 License
 
-```
-infiltrometer/
-├── main.py            Entry point
-├── config.py          All constants (addresses, thresholds, colours)
-├── sensor_manager.py  MCP23017 + VL53L4CD driver + Calibration Logic
-├── data_logger.py     CSV logging to USB stick
-├── gui.py             PyQt5 GUI (Measurement & Calibration Dialog)
-├── INA219.py          I2C Battery Monitor driver
-├── calibration.json   Saved Offset and Xtalk profiles (Auto-generated)
-└── setup.sh           Installation script (venv + systemd)
-```
-
----
-
-## CSV Output Format
-
-Saved to USB stick as `infiltrometer_YYYYMMDD_HHMMSS.csv`:
-
-```
-timestamp, sensor_0_mm, ..., sensor_7_mm, tension_0_hPa, ..., tension_7_hPa, fault_0, ..., fault_7, low_water_0, ..., low_water_7
-2025-06-01 09:00:00, 142, 138, ..., 50.0, 50.0, ..., 0, 0, ..., 0, 0, ...
-```
-
-- **sensor_N_mm**: measured water distance in mm (blank = error)
-- **tension_N_hPa**: applied tension entered in GUI
-- **fault_N**: 1 if GPIO1 fault line asserted
-- **low_water_N**: 1 if distance below threshold (default 20 mm)
-
----
-
-## Troubleshooting
-
-| Problem | Check |
-|---|---|
-| Sensor not detected | Check XSHUT 10kΩ pull-down, verify SDA/SCL connections |
-| All sensors fail init | Check I2C enabled (`i2cdetect -y 1`), check 4.7kΩ pull-ups |
-| USB stick not found | Check `/media/pi/` for mount, try different USB stick |
-| Battery % not showing | Check INA219 wiring to I2C and `0x43` address |
-| GUI not starting | `journalctl -u infiltrometer -f` for logs |
-
----
-
-## Adjustable Parameters (config.py)
-
-| Parameter | Default | Description |
-|---|---|---|
-| `LOW_WATER_THRESHOLD_MM` | 400 | Trigger low water warning below this distance |
-| `MEASUREMENT_INTERVALS` | [1,2,5,10,30,60,300] | Available intervals in GUI dropdown |
-| `DEFAULT_INTERVAL` | 5 | Default measurement interval (seconds) |
-| `STEADY_STATE_WINDOW_S` | 30 | Seconds to test for distance shift |
-| `STEADY_STATE_TOLERANCE_MM` | 1.0 | Allowed mm of shift to show steady state (Green dot) |
-
----
-
-## VL53L4CD Calibration Protocol
-For accurate readings through 2mm plexiglass against a 17% white reflecting target:
-1. Hit **Start All** to verify the sensors connect, then hit **Stop All**.
-2. Click **[🔧 Calibrate]** in the GUI.
-3. Select your physical sensor (Sensor 1 - 8) and input the true distance from the sensor to the target.
-4. The system calculates and saves the `Offset` and `Xtalk` compensation to `calibration.json`.
-5. These profiles are automatically applied on every startup!
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
