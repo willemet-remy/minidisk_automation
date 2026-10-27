@@ -1,12 +1,21 @@
 # Slimme Minidisk
+[![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32-orange.svg)](https://platformio.org/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Wireless](https://img.shields.io/badge/Wireless-ESP--NOW%202.4GHz-brightgreen.svg)]()
+[![Sensor](https://img.shields.io/badge/Sensor-ST%20VL53L4CD%20ToF-informational.svg)](https://www.st.com/en/imaging-and-photonics-solutions/vl53l4cd.html)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Slimme Minidisk** is a wireless data logger for [METER Mini Disk Infiltrometers](https://www.metergroup.com/). Instead of timing water level drops with a stopwatch and reading the meniscus by eye, a 3D-printed cap mounted on top of the Mariotte reservoir measures the distance to the water surface with a Time-of-Flight laser sensor (ST VL53L4CD) and sends the data wirelessly to a laptop.
+**Slimme Minidisk** is a wireless data logger based on the principle of the [METER Mini Disk Infiltrometers](https://www.metergroup.com/). Instead of timing water level drops with a stopwatch and reading the meniscus by eye, a 3D-printed cap mounted on top of the reservoir measures the distance to the water surface with a Time-of-Flight laser sensor (ST VL53L4CD) and sends the data wirelessly to a laptop. 
 
-One USB receiver handles several infiltrometers at once over ESP-NOW (2.4 GHz, no Wi-Fi network or pairing needed), making it practical to run multiple tension infiltrometers in parallel across a field plot.
+In this example, the device is used with a similar infiltrometer than [METER Mini Disk Infiltrometers](https://www.metergroup.com/), but the concept can be adapted to other devices that require water-level monitoring.
+
+A single USB receiver can communicate with multiple infiltrometers simultaneously via ESP-NOW (2.4 GHz), without requiring a Wi-Fi network or device pairing. This makes the system suitable for conducting parallel measurements with multiple tension infiltrometers in a field plot.
+
+The system is designed to support up to 20 registered peers; however, this maximum capacity has not yet been experimentally validated.
 
 | System overview | Sensor cap interior |
 | :---: | :---: |
-| <img src="Figures/Schematic_view.png" alt="Slimme Minidisk schematic" height="320"/> | <img src="Figures/IMG_2360.jpeg" alt="Inside the 3D-printed sensor cap" height="320"/> |
+| <img src="Figures/Slimme_minidisk_V2.png" alt="Slimme Minidisk schematic" height="320"/> | <img src="Figures/IMG_2360.jpeg" alt="Inside the 3D-printed sensor cap" height="320"/> |
 
 ## How it works
 
@@ -79,3 +88,15 @@ From `distance_mm` vs. `time_s` and the reservoir cross-section, cumulative infi
 - [`PCB_microcontroller/`](PCB_microcontroller/) — KiCad schematics, PCB layouts, and BOM
 - [`src/Esp32/`](src/Esp32/) — ESP32-C3 / ESP32-S3 node and receiver firmware
 - [`src/Computer/`](src/Computer/) — Python desktop acquisition app (`minidisk_acquisition.py`)
+
+## Authors
+
+- **Rémy Willemet** – *ILVO / Ghent University* – [remy.willemet@ilvo.vlaanderen.be](mailto:remy.willemet@ilvo.vlaanderen.be)
+
+## License
+
+This project utilizes separate licensing for hardware designs and software:
+
+- **Hardware Designs** (`hardware/`): Licensed under the **[CERN Open Hardware Licence Version 2 - Permissive (CERN-OHL-P v2)](LICENSE)**.
+  - Copyright © 2026 **Rémy Willemet**.
+- **Software & Firmware** (`firmware/`, `software/`, companion scripts): Dedicated to the **Public Domain** under **[Creative Commons CC0 1.0 Universal](LICENSE)** (or The Unlicense) with no copyright reserved.
