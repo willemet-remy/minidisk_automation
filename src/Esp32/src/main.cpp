@@ -1,8 +1,43 @@
+/*
+ * Slimme Minidisk — ESP-NOW firmware (sensor node + USB receiver)
+ * ================================================================
+ *
+ *  NODE      (default build)       : VL53L4CD distance sensor + button + buzzer.
+ *  RECEIVER  (-DROLE_RECEIVER)     : USB dongle that relays node data to the PC app.
+ *
+ * Field workflow
+ * --------------
+ *  1. Power the node            -> 1 beep  (+ 1 long beep if the distance sensor is missing)
+ *  2. Hold the button 2 s       -> 2 beeps, RECORDING starts (new run, time restarts at 0)
+ *  3. Hold the button 2 s again -> 3 beeps, recording STOPS (node returns to standby)
+ *  The PC app can also start/stop a node remotely.
+ *
+ * Data flow & robustness
+ * ----------------------
+ *  - The sensor ranges continuously (50 ms budget). All valid readings collected during
+ *    one sample interval (1 s) are averaged into ONE sample -> smooth water-level signal.
+ *  - Every second the node broadcasts a packet containing the newest sample AND the
+ *    previous ones (HISTORY_LEN). If a packet is lost, the next one fills the gap.
+ *    The receiver de-duplicates by sequence number, so the PC receives every sample once.
+ *  - Sensor problems never block the radio: the node keeps transmitting (distance marked
+ *    invalid) and re-initialises the sensor in the background.
+ *
+ * Receiver serial protocol (115200 baud, one line per message)
+ * ------------------------------------------------------------
+ *  Output  READY,mac=..,channel=..
+ *          HB,uptime_ms=..,nodes=..                       (heartbeat every 2 s)
+ *          DATA,node=..,name=..,run=..,seq=..,rec=0|1,rec_ms=..,distance_mm=..|NA,
+ *               status=..,n=..,sensor=0|1,uptime_ms=..,mac=..
+ *          NODE,... / LIST_END                            (answer to LIST)
+ *          ACK,cmd=START|STOP,target=..                   (answer to START/STOP)
+ *          # ...                                          (human readable, ignore)
+ *  Input   LIST | STATUS | HELP | START <id|ALL> | STOP <id|ALL>
+ */
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
-#include <esp_sleep.h>
 #include <Wire.h>
 #include "config.h"
 
@@ -10,692 +45,596 @@
 #include <vl53l4cd_class.h>
 #endif
 
-enum Command : uint8_t { COMMAND_NONE = 0, COMMAND_START = 1, COMMAND_PAUSE = 2 };
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared protocol
+// ─────────────────────────────────────────────────────────────────────────────
+enum Command : uint8_t { COMMAND_NONE = 0, COMMAND_START = 1, COMMAND_STOP = 2 };
 
-struct __attribute__((packed)) MeasurementPacket {
+static constexpr uint8_t SAMPLE_FLAG_VALID = 0x01;
+static constexpr uint8_t SAMPLE_FLAG_RECORDING = 0x02;
+static constexpr uint8_t HISTORY_LEN = 5;
+
+struct __attribute__((packed)) Sample {
+  uint32_t seq;          // Increments every sample since boot (starts at 1)
+  uint32_t rec_ms;       // Time since recording start (0 in standby)
+  uint16_t distance_mm;  // Averaged distance
+  uint8_t range_status;  // 0 = OK; otherwise last VL53 status (255 = sensor missing)
+  uint8_t flags;         // SAMPLE_FLAG_*
+  uint8_t n_avg;         // Number of raw readings averaged
+};
+
+struct __attribute__((packed)) NodePacket {
   uint32_t magic;
   uint8_t version;
   uint8_t node_id;
   char node_name[16];
-  uint32_t sequence;
+  uint16_t run_id;       // Increments each time recording starts
   uint32_t uptime_ms;
-  uint16_t distance_mm;
-  uint8_t range_status;
-  uint16_t battery_mv;
-  uint8_t flags; // bit 0 valid distance, bit 1 battery enabled, bit 2 measuring
+  uint8_t sensor_ok;
+  uint8_t count;         // Valid entries in samples[]
+  Sample samples[HISTORY_LEN];  // samples[0] = newest
 };
 
 struct __attribute__((packed)) ControlPacket {
   uint32_t magic;
   uint8_t version;
-  uint8_t target_node_id; // 0 = all nodes
+  uint8_t target_node_id;  // 0 = all nodes
   uint8_t command;
 };
 
-static_assert(sizeof(MeasurementPacket) <= ESP_NOW_MAX_DATA_LEN, "Measurement packet is too large");
+static_assert(sizeof(NodePacket) <= ESP_NOW_MAX_DATA_LEN, "Node packet too large");
+
+static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 static void printMac(const uint8_t *mac) {
   Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-static bool startEspNow() {
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  if (esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE) != ESP_OK ||
-      esp_now_init() != ESP_OK) return false;
-  return true;
+static void configureSerial() {
+  Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  // Native USB: never block the firmware when no computer is reading the port
+  // (battery-powered node in the field).
+  Serial.setTxTimeoutMs(0);
+#endif
 }
 
-static bool addBroadcastPeer() {
-  const uint8_t address[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static bool startRadio() {
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();  // Never try to join stored Wi-Fi networks (would hop channels)
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
+  WiFi.setTxPower(RADIO_TX_POWER);
+
+  if (esp_now_init() != ESP_OK) return false;
+
   esp_now_peer_info_t peer = {};
-  memcpy(peer.peer_addr, address, sizeof(peer.peer_addr));
-  peer.channel = ESPNOW_WIFI_CHANNEL;
-  return esp_now_add_peer(&peer) == ESP_OK || esp_now_is_peer_exist(address);
+  memcpy(peer.peer_addr, BROADCAST_MAC, 6);
+  peer.channel = 0;  // current channel
+  peer.ifidx = WIFI_IF_STA;
+  peer.encrypt = false;
+  const esp_err_t res = esp_now_add_peer(&peer);
+  return res == ESP_OK || res == ESP_ERR_ESPNOW_EXIST;
+}
+
+static uint8_t currentChannel() {
+  uint8_t primary = 0;
+  wifi_second_chan_t second;
+  esp_wifi_get_channel(&primary, &second);
+  return primary;
+}
+
+// Non-blocking line reader for USB serial commands.
+static bool readSerialLine(String &out) {
+  static String buffer;
+  while (Serial.available()) {
+    const char c = static_cast<char>(Serial.read());
+    if (c == '\r') continue;
+    if (c == '\n') {
+      out = buffer;
+      buffer = "";
+      out.trim();
+      return out.length() > 0;
+    }
+    if (buffer.length() < 64) buffer += c;
+  }
+  return false;
 }
 
 #ifdef ROLE_RECEIVER
+// ═════════════════════════════════════════════════════════════════════════════
+// RECEIVER
+// ═════════════════════════════════════════════════════════════════════════════
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RECEIVER IMPLEMENTATION (Tracks and Scans all Active Nodes)
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct TrackedNode {
+struct RxItem {
   uint8_t mac[6];
-  uint8_t node_id;
-  char node_name[16];
-  uint32_t last_seen_ms;
-  uint32_t packets_received;
-  uint32_t last_sequence;
-  uint16_t last_distance_mm;
-  uint8_t last_range_status;
-  uint16_t last_battery_mv;
-  bool is_measuring;
-  bool is_valid_distance;
-  bool has_battery;
+  NodePacket packet;
 };
 
-static constexpr size_t MAX_TRACKED_NODES = 20;
-static TrackedNode trackedNodes[MAX_TRACKED_NODES];
-static size_t trackedNodesCount = 0;
+struct TrackedNode {
+  bool used;
+  uint8_t node_id;
+  char name[17];
+  uint8_t mac[6];
+  uint32_t last_seq;
+  uint32_t last_uptime_ms;
+  uint32_t last_seen_ms;
+  uint32_t samples;
+  uint32_t lost;
+  uint16_t run_id;
+  bool recording;
+  bool sensor_ok;
+  bool valid;
+  uint16_t distance_mm;
+};
 
-static bool sendCommand(Command command, uint8_t targetNodeId = 0) {
-  ControlPacket packet = {COMMAND_MAGIC, PACKET_VERSION, targetNodeId, command};
-  const uint8_t broadcast[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-  return esp_now_send(broadcast, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet)) == ESP_OK;
+static constexpr size_t MAX_NODES = 20;
+static TrackedNode nodes[MAX_NODES];
+static QueueHandle_t rxQueue = nullptr;
+static volatile uint32_t rxDropped = 0;
+
+// Runs in the Wi-Fi task: copy and return immediately (no Serial here!).
+static void onDataReceived(const uint8_t *mac, const uint8_t *data, int len) {
+  if (len != static_cast<int>(sizeof(NodePacket)) || rxQueue == nullptr) return;
+  RxItem item;
+  memcpy(item.mac, mac, 6);
+  memcpy(&item.packet, data, sizeof(NodePacket));
+  if (item.packet.magic != PACKET_MAGIC || item.packet.version != PACKET_VERSION) return;
+  if (xQueueSend(rxQueue, &item, 0) != pdTRUE) rxDropped++;
 }
 
-static void updateTrackedNode(const uint8_t *mac, const MeasurementPacket &packet) {
-  int nodeIndex = -1;
-  for (size_t i = 0; i < trackedNodesCount; ++i) {
-    if (memcmp(trackedNodes[i].mac, mac, 6) == 0 || trackedNodes[i].node_id == packet.node_id) {
-      nodeIndex = static_cast<int>(i);
-      break;
-    }
+static TrackedNode *findOrCreateNode(uint8_t nodeId) {
+  TrackedNode *freeSlot = nullptr;
+  for (auto &n : nodes) {
+    if (n.used && n.node_id == nodeId) return &n;
+    if (!n.used && freeSlot == nullptr) freeSlot = &n;
   }
-
-  if (nodeIndex < 0 && trackedNodesCount < MAX_TRACKED_NODES) {
-    nodeIndex = static_cast<int>(trackedNodesCount++);
+  if (freeSlot) {
+    memset(freeSlot, 0, sizeof(TrackedNode));
+    freeSlot->used = true;
+    freeSlot->node_id = nodeId;
   }
+  return freeSlot;
+}
 
-  if (nodeIndex >= 0) {
-    TrackedNode &node = trackedNodes[nodeIndex];
-    memcpy(node.mac, mac, 6);
-    node.node_id = packet.node_id;
-    strncpy(node.node_name, packet.node_name, sizeof(node.node_name) - 1);
-    node.node_name[sizeof(node.node_name) - 1] = '\0';
-    node.last_seen_ms = millis();
-    node.packets_received++;
-    node.last_sequence = packet.sequence;
-    node.last_distance_mm = packet.distance_mm;
-    node.last_range_status = packet.range_status;
-    node.last_battery_mv = packet.battery_mv;
-    node.is_valid_distance = (packet.flags & 0x01) != 0;
-    node.has_battery = (packet.flags & 0x02) != 0;
-    node.is_measuring = (packet.flags & 0x04) != 0;
+static size_t nodeCount() {
+  size_t c = 0;
+  for (auto &n : nodes) c += n.used ? 1 : 0;
+  return c;
+}
+
+static void emitSample(const TrackedNode &node, const NodePacket &p, const Sample &s) {
+  const bool valid = s.flags & SAMPLE_FLAG_VALID;
+  Serial.printf("DATA,node=%u,name=%s,run=%u,seq=%lu,rec=%d,rec_ms=%lu,distance_mm=",
+                node.node_id, node.name, p.run_id, static_cast<unsigned long>(s.seq),
+                (s.flags & SAMPLE_FLAG_RECORDING) ? 1 : 0, static_cast<unsigned long>(s.rec_ms));
+  if (valid) Serial.print(s.distance_mm); else Serial.print("NA");
+  Serial.printf(",status=%u,n=%u,sensor=%u,uptime_ms=%lu,mac=", s.range_status, s.n_avg,
+                p.sensor_ok, static_cast<unsigned long>(p.uptime_ms));
+  printMac(node.mac);
+  Serial.println();
+}
+
+static void handlePacket(const RxItem &item) {
+  const NodePacket &p = item.packet;
+  TrackedNode *node = findOrCreateNode(p.node_id);
+  if (!node || p.count == 0 || p.count > HISTORY_LEN) return;
+
+  memcpy(node->mac, item.mac, 6);
+  memcpy(node->name, p.node_name, 16);
+  node->name[16] = '\0';
+  for (char *c = node->name; *c; ++c) if (*c == ',' || *c == '=') *c = '_';
+
+  // Node rebooted? (uptime went backwards or sequence restarted)
+  if (p.uptime_ms + 2000 < node->last_uptime_ms || p.samples[0].seq + HISTORY_LEN < node->last_seq) {
+    Serial.printf("# node %u rebooted\n", p.node_id);
+    node->last_seq = 0;
+  }
+  node->last_uptime_ms = p.uptime_ms;
+  node->last_seen_ms = millis();
+  node->run_id = p.run_id;
+  node->sensor_ok = p.sensor_ok;
+
+  // Emit samples oldest -> newest, skipping the ones already forwarded.
+  for (int i = p.count - 1; i >= 0; --i) {
+    const Sample &s = p.samples[i];
+    if (s.seq <= node->last_seq) continue;
+    if (node->last_seq != 0 && s.seq > node->last_seq + 1) node->lost += s.seq - node->last_seq - 1;
+    emitSample(*node, p, s);
+    node->last_seq = s.seq;
+    node->samples++;
+    node->recording = s.flags & SAMPLE_FLAG_RECORDING;
+    node->valid = s.flags & SAMPLE_FLAG_VALID;
+    node->distance_mm = s.distance_mm;
   }
 }
 
-static void printScannedNodes() {
+static void sendCommand(Command cmd, uint8_t target) {
+  const ControlPacket packet = {COMMAND_MAGIC, PACKET_VERSION, target, cmd};
+  // Broadcast has no ACK: repeat a few times (commands are idempotent on the node).
+  for (int i = 0; i < 3; ++i) {
+    esp_now_send(BROADCAST_MAC, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
+    delay(15);
+  }
+}
+
+static void printList() {
   const uint32_t now = millis();
-  Serial.println("\n══════════════════════════════════════════════════════════════════════");
-  Serial.printf(" DISCOVERED SENSORS / NODES SCAN REPORT (Total: %u)\n", static_cast<unsigned>(trackedNodesCount));
-  Serial.println("══════════════════════════════════════════════════════════════════════");
-  Serial.println(" ID | Sensor Name     | State     | Distance | Battery | Last Seen | Packets");
-  Serial.println("----+-----------------+-----------+----------+---------+-----------+--------");
-
-  for (size_t i = 0; i < trackedNodesCount; ++i) {
-    const TrackedNode &node = trackedNodes[i];
-    const uint32_t ageSec = (now - node.last_seen_ms) / 1000UL;
-    const char *stateStr = node.is_measuring ? "MEASURING" : "STANDBY  ";
-
-    char distStr[16];
-    if (node.is_valid_distance) snprintf(distStr, sizeof(distStr), "%4u mm", node.last_distance_mm);
-    else snprintf(distStr, sizeof(distStr), "   NA   ");
-
-    char battStr[16];
-    if (node.has_battery) snprintf(battStr, sizeof(battStr), "%4u mV", node.last_battery_mv);
-    else snprintf(battStr, sizeof(battStr), "   NA   ");
-
-    Serial.printf(" %02u | %-15s | %s | %s | %s | %4u s ago | %6u\n",
-                  node.node_id, node.node_name, stateStr, distStr, battStr, ageSec, node.packets_received);
-
-    // Machine-readable scan output for software integration
-    Serial.printf("SCAN_NODE,node=%u,name=%s,measuring=%d,distance_mm=%u,battery_mv=%u,age_sec=%u,mac=",
-                  node.node_id, node.node_name, node.is_measuring ? 1 : 0,
-                  node.is_valid_distance ? node.last_distance_mm : 0,
-                  node.has_battery ? node.last_battery_mv : 0, ageSec);
-    printMac(node.mac);
+  for (auto &n : nodes) {
+    if (!n.used) continue;
+    Serial.printf("NODE,node=%u,name=%s,run=%u,rec=%d,distance_mm=", n.node_id, n.name, n.run_id,
+                  n.recording ? 1 : 0);
+    if (n.valid) Serial.print(n.distance_mm); else Serial.print("NA");
+    Serial.printf(",sensor=%u,age_ms=%lu,samples=%lu,lost=%lu,mac=", n.sensor_ok ? 1 : 0,
+                  static_cast<unsigned long>(now - n.last_seen_ms), static_cast<unsigned long>(n.samples),
+                  static_cast<unsigned long>(n.lost));
+    printMac(n.mac);
     Serial.println();
   }
-  Serial.println("══════════════════════════════════════════════════════════════════════\n");
+  Serial.println("LIST_END");
 }
 
-static void onDataReceived(const uint8_t *sourceMac, const uint8_t *data, int length) {
-  if (length != sizeof(MeasurementPacket)) return;
-  MeasurementPacket packet = {};
-  memcpy(&packet, data, sizeof(packet));
-  if (packet.magic != PACKET_MAGIC || packet.version != PACKET_VERSION) return;
-  packet.node_name[sizeof(packet.node_name) - 1] = '\0';
-
-  updateTrackedNode(sourceMac, packet);
-
-  Serial.print("DATA,node="); Serial.print(packet.node_id);
-  Serial.print(",name="); Serial.print(packet.node_name);
-  Serial.print(",sequence="); Serial.print(packet.sequence);
-  Serial.print(",uptime_ms="); Serial.print(packet.uptime_ms);
-  Serial.print(",measuring="); Serial.print((packet.flags & 0x04) ? 1 : 0);
-  Serial.print(",distance_mm="); if (packet.flags & 0x01) Serial.print(packet.distance_mm); else Serial.print("NA");
-  Serial.print(",range_status="); Serial.print(packet.range_status);
-  Serial.print(",battery_mv="); if (packet.flags & 0x02) Serial.print(packet.battery_mv); else Serial.print("NA");
-  Serial.print(",source_mac="); printMac(sourceMac); Serial.println();
+static void printStatus() {
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  Serial.printf("STATUS,uptime_ms=%lu,channel=%u,nodes=%u,rx_dropped=%lu,mac=", millis(), currentChannel(),
+                static_cast<unsigned>(nodeCount()), static_cast<unsigned long>(rxDropped));
+  printMac(mac);
+  Serial.println();
 }
 
-static void printReceiverHelp() {
-  Serial.println("\n╔═════════════════════════════════════════════════════════════════╗");
-  Serial.println("║                RECEIVER USB DEBUG COMMANDS                      ║");
-  Serial.println("╠═════════════════════════════════════════════════════════════════╣");
-  Serial.println("║  SCAN / NODES / LIST  : Print & upload all discovered sensors   ║");
-  Serial.println("║  START [node_id]      : Broadcast/send START command to nodes   ║");
-  Serial.println("║  PAUSE / STOP         : Broadcast/send PAUSE command to nodes   ║");
-  Serial.println("║  STATUS               : Show receiver uptime and active nodes   ║");
-  Serial.println("║  CLEAR                : Clear the tracked sensors list          ║");
-  Serial.println("║  HELP / ?             : Display this command menu               ║");
-  Serial.println("╚═════════════════════════════════════════════════════════════════╝\n");
+static void printHelp() {
+  Serial.println("# Commands: LIST | STATUS | START <id|ALL> | STOP <id|ALL> | HELP");
 }
 
-static void processReceiverCommands() {
-  if (!Serial.available()) return;
-  String command = Serial.readStringUntil('\n');
-  command.trim();
-  if (command.length() == 0) return;
+static void processCommands() {
+  String line;
+  if (!readSerialLine(line)) return;
+  line.toUpperCase();
 
-  String upper = command;
-  upper.toUpperCase();
+  if (line == "LIST" || line == "SCAN" || line == "NODES") { printList(); return; }
+  if (line == "STATUS") { printStatus(); return; }
+  if (line == "HELP" || line == "?") { printHelp(); return; }
 
-  if (upper == "HELP" || upper == "?") {
-    printReceiverHelp();
-    return;
-  }
+  Command cmd = COMMAND_NONE;
+  String arg;
+  if (line.startsWith("START")) { cmd = COMMAND_START; arg = line.substring(5); }
+  else if (line.startsWith("STOP")) { cmd = COMMAND_STOP; arg = line.substring(4); }
+  else if (line.startsWith("PAUSE")) { cmd = COMMAND_STOP; arg = line.substring(5); }
 
-  if (upper == "SCAN" || upper == "NODES" || upper == "LIST" || upper == "SENSORS") {
-    printScannedNodes();
-    return;
-  }
+  if (cmd == COMMAND_NONE) { Serial.println("ERROR,unknown_command"); return; }
+  arg.trim();
+  if (arg.length() == 0) { Serial.println("ERROR,missing_target (use START <id> or START ALL)"); return; }
+  const uint8_t target = (arg == "ALL") ? 0 : static_cast<uint8_t>(arg.toInt());
+  if (arg != "ALL" && target == 0) { Serial.println("ERROR,bad_target"); return; }
 
-  if (upper == "STATUS") {
-    uint8_t mac[6]; WiFi.macAddress(mac);
-    Serial.printf("STATUS: Receiver Uptime=%lu ms | Channel=%d | Tracked Nodes=%u | MAC=",
-                  millis(), ESPNOW_WIFI_CHANNEL, static_cast<unsigned>(trackedNodesCount));
-    printMac(mac);
-    Serial.println();
-    return;
-  }
-
-  if (upper == "CLEAR") {
-    trackedNodesCount = 0;
-    Serial.println("STATUS: Tracked nodes list cleared.");
-    return;
-  }
-
-  Command radioCommand = COMMAND_NONE;
-  uint8_t targetNode = 0;
-
-  if (upper.startsWith("START")) {
-    radioCommand = COMMAND_START;
-    if (upper.length() > 5) targetNode = static_cast<uint8_t>(upper.substring(5).toInt());
-  } else if (upper.startsWith("PAUSE") || upper.startsWith("STOP") || upper.startsWith("END")) {
-    radioCommand = COMMAND_PAUSE;
-    if (upper.length() > 5) targetNode = static_cast<uint8_t>(upper.substring(5).toInt());
-  }
-
-  if (radioCommand != COMMAND_NONE) {
-    const bool sent = sendCommand(radioCommand, targetNode);
-    Serial.printf("EVENT,command=%s,target=%u,queued=%d\n",
-                  radioCommand == COMMAND_START ? "START" : "PAUSE", targetNode, sent ? 1 : 0);
-  } else {
-    Serial.println("ERROR,unknown_command (Type HELP or ? for commands)");
-  }
+  sendCommand(cmd, target);
+  Serial.printf("ACK,cmd=%s,target=%u\n", cmd == COMMAND_START ? "START" : "STOP", target);
 }
 
 void setup() {
-  Serial.begin(115200);
-  delay(500);
+  configureSerial();
+  delay(300);
+  rxQueue = xQueueCreate(32, sizeof(RxItem));
 
-  Serial.println("\n╔═════════════════════════════════════════════════════════════════╗");
-  Serial.println("║            SLIMME MINIDISK - ESP-NOW RECEIVER                   ║");
-  Serial.println("╚═════════════════════════════════════════════════════════════════╝");
-
-  if (!startEspNow() || !addBroadcastPeer()) {
-    Serial.println("ERROR,espnow_initialization_failed");
+  Serial.println("# Slimme Minidisk receiver");
+  if (!startRadio()) {
+    Serial.println("ERROR,radio_init_failed");
     return;
   }
   esp_now_register_recv_cb(onDataReceived);
 
   uint8_t mac[6];
   WiFi.macAddress(mac);
-  Serial.print("READY,receiver_mac="); printMac(mac);
-  Serial.printf(",channel=%d\n", ESPNOW_WIFI_CHANNEL);
-  Serial.println("Type 'HELP' or 'SCAN' for USB cable debug commands.\n");
+  Serial.print("READY,mac=");
+  printMac(mac);
+  Serial.printf(",channel=%u\n", currentChannel());
+  printHelp();
 }
 
 void loop() {
-  processReceiverCommands();
-  delay(5);
+  RxItem item;
+  while (rxQueue && xQueueReceive(rxQueue, &item, 0) == pdTRUE) handlePacket(item);
+
+  processCommands();
+
+  static uint32_t lastHeartbeat = 0;
+  if (millis() - lastHeartbeat >= 2000) {
+    lastHeartbeat = millis();
+    Serial.printf("HB,uptime_ms=%lu,nodes=%u\n", lastHeartbeat, static_cast<unsigned>(nodeCount()));
+  }
+  delay(2);
 }
 
 #else
+// ═════════════════════════════════════════════════════════════════════════════
+// SENSOR NODE
+// ═════════════════════════════════════════════════════════════════════════════
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SENSOR NODE IMPLEMENTATION (Sender with Cable Debug CLI & Button)
-// ─────────────────────────────────────────────────────────────────────────────
+static char nodeName[16];
 
-static uint32_t sequence = 0;
-static bool measuring = false; // Always start in Standby
+// Recording state
+static bool recording = false;
+static uint16_t runId = 0;
+static uint32_t recStartMs = 0;
 static volatile Command pendingCommand = COMMAND_NONE;
 
-static VL53L4CD *vl53Sensor = nullptr;
-static bool vl53Initialized = false;
+// Sampling state
+static uint32_t sequence = 0;
+static Sample history[HISTORY_LEN];
+static uint8_t historyCount = 0;
+static uint32_t lastSampleMs = 0;
+static uint32_t accSum = 0;
+static uint16_t accCount = 0;
+static uint16_t lastRawDistance = 0;
+static uint8_t lastRawStatus = 255;
 
-static void onControlReceived(const uint8_t *, const uint8_t *data, int length) {
-  if (length != sizeof(ControlPacket)) return;
-  ControlPacket packet = {};
-  memcpy(&packet, data, sizeof(packet));
-  if (packet.magic == COMMAND_MAGIC && packet.version == PACKET_VERSION &&
-      (packet.target_node_id == 0 || packet.target_node_id == NODE_ID) &&
-      (packet.command == COMMAND_START || packet.command == COMMAND_PAUSE)) {
-    pendingCommand = static_cast<Command>(packet.command);
-  }
-}
+// Sensor state
+static VL53L4CD *sensor = nullptr;
+static bool sensorOk = false;
+static uint32_t lastSensorAttemptMs = 0;
+static uint16_t sensorErrors = 0;
 
-static uint16_t readBatteryMillivolts() {
-#if BATTERY_MONITOR_ENABLED
-  analogReadResolution(12);
-  return static_cast<uint16_t>(analogReadMilliVolts(BATTERY_ADC_PIN) * BATTERY_DIVIDER_RATIO);
-#else
-  return 0;
+// ── Buzzer ──────────────────────────────────────────────────────────────────
+static void buzzerWrite(bool on) {
+#if BUZZER_ENABLED
+  digitalWrite(BUZZER_PIN, (on == BUZZER_ACTIVE_HIGH) ? HIGH : LOW);
 #endif
 }
 
-static void initMeasurementLed() {
-#if MEASUREMENT_LED_ENABLED
-  pinMode(MEASUREMENT_LED_PIN, OUTPUT);
-  // Blink twice when ESP32 powers on
-  for (int i = 0; i < 2; ++i) {
-    digitalWrite(MEASUREMENT_LED_PIN, MEASUREMENT_LED_ACTIVE_HIGH ? HIGH : LOW);
-    delay(150);
-    digitalWrite(MEASUREMENT_LED_PIN, MEASUREMENT_LED_ACTIVE_HIGH ? LOW : HIGH);
-    delay(150);
-  }
-  // Explicitly OFF in standby
-  digitalWrite(MEASUREMENT_LED_PIN, MEASUREMENT_LED_ACTIVE_HIGH ? LOW : HIGH);
-#endif
-}
-
-static void updateMeasurementLed(bool isMeasuring) {
-#if MEASUREMENT_LED_ENABLED
-  if (isMeasuring) {
-    // Slow blink when measuring (500ms ON / 500ms OFF)
-    static uint32_t lastBlinkTime = 0;
-    static bool ledState = false;
-    const uint32_t now = millis();
-    if (now - lastBlinkTime >= MEASUREMENT_LED_BLINK_INTERVAL_MS) {
-      lastBlinkTime = now;
-      ledState = !ledState;
-      digitalWrite(MEASUREMENT_LED_PIN, (ledState == MEASUREMENT_LED_ACTIVE_HIGH) ? HIGH : LOW);
-    }
-  } else {
-    // Explicitly OFF in standby
-    digitalWrite(MEASUREMENT_LED_PIN, MEASUREMENT_LED_ACTIVE_HIGH ? LOW : HIGH);
+static void beep(int times, uint32_t onMs = BUZZER_BEEP_DURATION_MS, uint32_t offMs = BUZZER_BEEP_PAUSE_MS) {
+#if BUZZER_ENABLED
+  for (int i = 0; i < times; ++i) {
+    buzzerWrite(true);
+    delay(onMs);
+    buzzerWrite(false);
+    if (i < times - 1) delay(offMs);
   }
 #endif
 }
 
-static void initButton() {
-#if BUTTON_ENABLED
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-#endif
+// ── Distance sensor ─────────────────────────────────────────────────────────
+static bool sensorPresentOnBus() {
+  Wire.beginTransmission(0x29);
+  return Wire.endTransmission() == 0;
 }
 
-static bool startSensor() {
-  if (vl53Initialized) return true;
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(I2C_CLOCK_HZ);
-  if (!vl53Sensor) {
-    vl53Sensor = new VL53L4CD(&Wire, VL53_XSHUT_PIN);
-  }
-  vl53Sensor->begin();
-  vl53Sensor->VL53L4CD_On();
-  if (vl53Sensor->VL53L4CD_SensorInit() != VL53L4CD_ERROR_NONE) {
-    Serial.println("[VL53] Error: SensorInit failed. Check I2C wiring (SDA/SCL) and XSHUT pin.");
-    vl53Sensor->VL53L4CD_Off();
+static bool initSensor() {
+  lastSensorAttemptMs = millis();
+  if (!sensor) sensor = new VL53L4CD(&Wire, VL53_XSHUT_PIN);
+  sensor->begin();          // XSHUT low -> hardware reset
+  delay(5);
+  sensor->VL53L4CD_On();    // XSHUT high (+10 ms boot delay inside the library)
+  delay(5);
+  if (!sensorPresentOnBus()) {
+    if (SERIAL_DEBUG) Serial.println("# [sensor] no device at 0x29 (check wiring)");
     return false;
   }
-  vl53Sensor->VL53L4CD_SetRangeTiming(VL53_TIMING_BUDGET_MS, 0);
-  if (vl53Sensor->VL53L4CD_StartRanging() != VL53L4CD_ERROR_NONE) {
-    Serial.println("[VL53] Error: StartRanging failed.");
-    vl53Sensor->VL53L4CD_Off();
+  if (sensor->VL53L4CD_SensorInit() != VL53L4CD_ERROR_NONE ||
+      sensor->VL53L4CD_SetRangeTiming(VL53_TIMING_BUDGET_MS, 0) != VL53L4CD_ERROR_NONE ||
+      sensor->VL53L4CD_StartRanging() != VL53L4CD_ERROR_NONE) {
+    if (SERIAL_DEBUG) Serial.println("# [sensor] initialisation failed");
     return false;
   }
-  vl53Initialized = true;
-  Serial.println("[VL53] Sensor initialized and ranging started successfully.");
+  sensorErrors = 0;
+  if (SERIAL_DEBUG) Serial.println("# [sensor] VL53L4CD ranging");
   return true;
 }
 
-static void stopSensor() {
-  if (vl53Initialized && vl53Sensor) {
-    vl53Sensor->VL53L4CD_StopRanging();
-    vl53Sensor->VL53L4CD_Off();
-    vl53Initialized = false;
-    Serial.println("[VL53] Sensor stopped and powered off.");
-  }
+static bool statusAccepted(uint8_t status) {
+  if (status == 0) return true;
+  return VL53_ACCEPT_WARNING_STATUS && (status == 1 || status == 2);
 }
 
-static void setMeasuringState(bool active) {
-  if (measuring == active) return;
-  measuring = active;
-  if (measuring) {
-    Serial.println("\n[STATE] Measurement STARTED (LED blinking slowly)");
-    startSensor();
+// Called continuously from loop(): never waits for the sensor.
+static void pollSensor() {
+  if (!sensorOk) {
+    if (millis() - lastSensorAttemptMs >= SENSOR_RETRY_MS) sensorOk = initSensor();
+    return;
+  }
+  static uint32_t lastPoll = 0;
+  if (millis() - lastPoll < 5) return;
+  lastPoll = millis();
+
+  uint8_t ready = 0;
+  if (sensor->VL53L4CD_CheckForDataReady(&ready) != VL53L4CD_ERROR_NONE) {
+    if (++sensorErrors > 50) {
+      if (SERIAL_DEBUG) Serial.println("# [sensor] too many I2C errors, re-initialising");
+      sensorOk = false;
+    }
+    return;
+  }
+  if (!ready) return;
+
+  VL53L4CD_Result_t result = {};
+  if (sensor->VL53L4CD_GetResult(&result) == VL53L4CD_ERROR_NONE) {
+    sensorErrors = 0;
+    lastRawStatus = result.range_status;
+    lastRawDistance = result.distance_mm;
+    if (statusAccepted(result.range_status) && result.distance_mm > 0) {
+      accSum += result.distance_mm;
+      accCount++;
+    }
+  }
+  sensor->VL53L4CD_ClearInterrupt();
+}
+
+// ── Sampling & radio ────────────────────────────────────────────────────────
+static void sendPacket() {
+  NodePacket p = {};
+  p.magic = PACKET_MAGIC;
+  p.version = PACKET_VERSION;
+  p.node_id = NODE_ID;
+  strncpy(p.node_name, nodeName, sizeof(p.node_name) - 1);
+  p.run_id = runId;
+  p.uptime_ms = millis();
+  p.sensor_ok = sensorOk ? 1 : 0;
+  p.count = historyCount;
+  memcpy(p.samples, history, sizeof(Sample) * historyCount);
+  esp_now_send(BROADCAST_MAC, reinterpret_cast<const uint8_t *>(&p), sizeof(p));
+}
+
+static void takeSample() {
+  Sample s = {};
+  s.seq = ++sequence;
+  s.rec_ms = recording ? millis() - recStartMs : 0;
+  if (accCount > 0) {
+    s.distance_mm = static_cast<uint16_t>((accSum + accCount / 2) / accCount);
+    s.flags |= SAMPLE_FLAG_VALID;
+    s.range_status = 0;
   } else {
-    Serial.println("\n[STATE] Measurement STOPPED (Standby mode, LED OFF)");
-    stopSensor();
-#if MEASUREMENT_LED_ENABLED
-    digitalWrite(MEASUREMENT_LED_PIN, MEASUREMENT_LED_ACTIVE_HIGH ? LOW : HIGH);
-#endif
+    s.distance_mm = lastRawDistance;
+    s.range_status = sensorOk ? lastRawStatus : 255;
+  }
+  s.n_avg = static_cast<uint8_t>(min<uint16_t>(accCount, 255));
+  if (recording) s.flags |= SAMPLE_FLAG_RECORDING;
+  accSum = 0;
+  accCount = 0;
+
+  // Shift history (newest first)
+  memmove(&history[1], &history[0], sizeof(Sample) * (HISTORY_LEN - 1));
+  history[0] = s;
+  if (historyCount < HISTORY_LEN) historyCount++;
+
+  sendPacket();
+
+  if (SERIAL_DEBUG) {
+    Serial.printf("# [tx] seq=%lu %s t=%.1fs dist=", static_cast<unsigned long>(s.seq),
+                  recording ? "REC" : "standby", s.rec_ms / 1000.0f);
+    if (s.flags & SAMPLE_FLAG_VALID) Serial.printf("%u mm (n=%u)\n", s.distance_mm, s.n_avg);
+    else Serial.printf("NA (status=%u)\n", s.range_status);
   }
 }
 
+static void setRecording(bool on, const char *source) {
+  if (recording == on) return;
+  if (on) {
+    beep(2);
+    runId++;
+    recording = true;
+    recStartMs = millis();
+    accSum = 0;
+    accCount = 0;
+  } else {
+    recording = false;
+    beep(3);
+  }
+  if (SERIAL_DEBUG) Serial.printf("# [state] %s run %u (%s)\n", on ? "START" : "STOP", runId, source);
+  lastSampleMs = millis();
+  takeSample();  // Inform the receiver immediately
+}
+
+// ── Remote commands (ESP-NOW) ───────────────────────────────────────────────
+static void onControlReceived(const uint8_t *, const uint8_t *data, int len) {
+  if (len != static_cast<int>(sizeof(ControlPacket))) return;
+  ControlPacket c;
+  memcpy(&c, data, sizeof(c));
+  if (c.magic != COMMAND_MAGIC || c.version != PACKET_VERSION) return;
+  if (c.target_node_id != 0 && c.target_node_id != NODE_ID) return;
+  if (c.command == COMMAND_START || c.command == COMMAND_STOP) pendingCommand = static_cast<Command>(c.command);
+}
+
+// ── Button (hold 2 s to toggle) ─────────────────────────────────────────────
 static void handleButton() {
 #if BUTTON_ENABLED
-  static uint32_t pressStartTime = 0;
-  static bool wasPressed = false;
-  static bool holdTriggered = false;
-
-  const bool isPressed = (digitalRead(BUTTON_PIN) == LOW);
-  if (isPressed) {
-    if (!wasPressed) {
-      wasPressed = true;
-      pressStartTime = millis();
-      holdTriggered = false;
-      Serial.println("[BUTTON] Pressed... hold for 2s to toggle measurement");
-    } else if (!holdTriggered && (millis() - pressStartTime >= BUTTON_HOLD_TIME_MS)) {
-      holdTriggered = true;
-      Serial.println("[BUTTON] 2-second hold triggered!");
-      setMeasuringState(!measuring);
-#if MEASUREMENT_LED_ENABLED
-      // Quick flash to confirm button hold action
-      digitalWrite(MEASUREMENT_LED_PIN, MEASUREMENT_LED_ACTIVE_HIGH ? HIGH : LOW);
-      delay(120);
-      digitalWrite(MEASUREMENT_LED_PIN, MEASUREMENT_LED_ACTIVE_HIGH ? LOW : HIGH);
-#endif
-    }
-  } else {
-    wasPressed = false;
-    holdTriggered = false;
+  static uint32_t pressStart = 0;
+  static bool pressed = false;
+  static bool fired = false;
+  const bool down = digitalRead(BUTTON_PIN) == LOW;
+  if (down && !pressed) {
+    pressed = true;
+    fired = false;
+    pressStart = millis();
+  } else if (down && !fired && millis() - pressStart >= BUTTON_HOLD_TIME_MS) {
+    fired = true;
+    setRecording(!recording, "button");
+  } else if (!down) {
+    pressed = false;
   }
 #endif
 }
 
-static void scanVl53I2cBus() {
-  pinMode(VL53_XSHUT_PIN, OUTPUT);
-  digitalWrite(VL53_XSHUT_PIN, HIGH);  // LPn/XSHUT is active low.
-  delay(20);
-
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(100000UL);
-  Serial.printf("\n[I2C] Scanning bus: SDA=GPIO%d SCL=GPIO%d XSHUT=GPIO%d\n",
-                I2C_SDA_PIN, I2C_SCL_PIN, VL53_XSHUT_PIN);
-  bool foundAnyDevice = false;
-  for (uint8_t address = 1; address < 127; ++address) {
-    Wire.beginTransmission(address);
-    if (Wire.endTransmission() == 0) {
-      Serial.printf("  ✓ I2C device found at address: 0x%02X%s\n", address,
-                    address == 0x29 ? " (VL53L4CD ToF Sensor Detected!)" : "");
-      foundAnyDevice = true;
-    }
-  }
-  if (!foundAnyDevice) {
-    Serial.println("  ✗ No I2C devices found. Check 3.3V, GND, SDA, SCL, and pull-up resistors.");
-  }
-  Serial.println();
-}
-
-static bool readDistance(MeasurementPacket &packet) {
-  if (!startSensor()) return false;
-  uint8_t ready = 0;
-  const uint32_t deadline = millis() + VL53_TIMING_BUDGET_MS + 250;
-  while (!ready && millis() < deadline) {
-    if (vl53Sensor->VL53L4CD_CheckForDataReady(&ready) != VL53L4CD_ERROR_NONE) {
-      break;
-    }
-    delay(5);
-  }
-  VL53L4CD_Result_t result = {};
-  if (ready && vl53Sensor->VL53L4CD_GetResult(&result) == VL53L4CD_ERROR_NONE) {
-    packet.distance_mm = result.distance_mm;
-    packet.range_status = result.range_status;
-    if (result.range_status == 0) packet.flags |= 0x01;
-    vl53Sensor->VL53L4CD_ClearInterrupt();
-    if (SERIAL_DEBUG) {
-      Serial.printf("[DISTANCE] distance=%u mm | status=%u (%s)\n",
-                    result.distance_mm, result.range_status,
-                    result.range_status == 0 ? "VALID" : "INVALID/OUT OF RANGE");
-    }
-    return true;
-  }
-  return false;
-}
-
-static void sendMeasurementSample() {
-  MeasurementPacket packet = {};
-  packet.magic = PACKET_MAGIC;
-  packet.version = PACKET_VERSION;
-  packet.node_id = NODE_ID;
-  strncpy(packet.node_name, NODE_NAME, sizeof(packet.node_name) - 1);
-  packet.sequence = ++sequence;
-  packet.uptime_ms = millis();
-  packet.range_status = 255;
-  if (measuring) {
-    packet.flags |= 0x04;
-    readDistance(packet);
-  }
-#if BATTERY_MONITOR_ENABLED
-  packet.flags |= 0x02;
-  packet.battery_mv = readBatteryMillivolts();
-#endif
-  const uint8_t broadcast[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-  esp_now_send(broadcast, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
-  if (SERIAL_DEBUG) {
-    Serial.printf("[TX] Node=%s (ID=%u) | Seq=%u | Mode=%s | Dist=%u mm | Battery=%u mV\n",
-                  NODE_NAME, NODE_ID, packet.sequence,
-                  measuring ? "MEASURING" : "STANDBY",
-                  (packet.flags & 0x01) ? packet.distance_mm : 0,
-                  packet.battery_mv);
-  }
-}
-
-static void printNodeHelp() {
-  Serial.println("\n╔═════════════════════════════════════════════════════════════════╗");
-  Serial.println("║              SENSOR NODE USB CABLE DEBUG COMMANDS               ║");
-  Serial.println("╠═════════════════════════════════════════════════════════════════╣");
-  Serial.println("║  STATUS / INFO  : Show live node state, mode, and battery       ║");
-  Serial.println("║  START          : Start measurement locally                     ║");
-  Serial.println("║  STOP / PAUSE   : Stop measurement (return to Standby)          ║");
-  Serial.println("║  SCAN / I2C     : Run I2C bus scan to verify sensor at 0x29     ║");
-  Serial.println("║  DISTANCE / READ: Read a single distance sample immediately     ║");
-  Serial.println("║  LED            : Test measurement LED (3 blinks)               ║");
-  Serial.println("║  PING           : Send an immediate ESP-NOW packet              ║");
-  Serial.println("║  HELP / ?       : Display this command menu                     ║");
-  Serial.println("╚═════════════════════════════════════════════════════════════════╝\n");
-}
-
-static void processNodeCableCommands() {
-  if (!Serial.available()) return;
-  String command = Serial.readStringUntil('\n');
-  command.trim();
-  if (command.length() == 0) return;
-
-  String upper = command;
-  upper.toUpperCase();
-
-  if (upper == "HELP" || upper == "?") {
-    printNodeHelp();
-    return;
-  }
-
-  if (upper == "STATUS" || upper == "INFO") {
-    uint8_t mac[6]; WiFi.macAddress(mac);
-    Serial.printf("\n[NODE STATUS] Node ID=%u | Name=%s | Mode=%s\n",
-                  NODE_ID, NODE_NAME, measuring ? "MEASURING (Active)" : "STANDBY");
-    Serial.printf("  Uptime: %lu ms | Sequence: %u | Battery: %u mV\n",
-                  millis(), sequence, readBatteryMillivolts());
-    Serial.print("  MAC: "); printMac(mac); Serial.printf(" | Channel: %d\n", ESPNOW_WIFI_CHANNEL);
-    Serial.printf("  Pins: SDA=GPIO%d, SCL=GPIO%d, XSHUT=GPIO%d, LED=GPIO%d, Button=GPIO%d\n\n",
-                  I2C_SDA_PIN, I2C_SCL_PIN, VL53_XSHUT_PIN, MEASUREMENT_LED_PIN, BUTTON_PIN);
-    return;
-  }
-
-  if (upper == "START") {
-    setMeasuringState(true);
-    return;
-  }
-
-  if (upper == "STOP" || upper == "PAUSE") {
-    setMeasuringState(false);
-    return;
-  }
-
-  if (upper == "SCAN" || upper == "I2C") {
-    scanVl53I2cBus();
-    return;
-  }
-
-  if (upper == "DISTANCE" || upper == "READ") {
-    MeasurementPacket tempPacket = {};
-    if (readDistance(tempPacket)) {
-      Serial.printf("[READ] Valid Distance: %u mm (Range Status: %u)\n", tempPacket.distance_mm, tempPacket.range_status);
-    } else {
-      Serial.println("[READ] Sensor read failed or no target in range.");
-    }
-    return;
-  }
-
-  if (upper == "LED") {
-    Serial.println("[LED] Testing indicator LED (3 blinks)...");
-#if MEASUREMENT_LED_ENABLED
-    for (int i = 0; i < 3; ++i) {
-      digitalWrite(MEASUREMENT_LED_PIN, MEASUREMENT_LED_ACTIVE_HIGH ? HIGH : LOW);
-      delay(200);
-      digitalWrite(MEASUREMENT_LED_PIN, MEASUREMENT_LED_ACTIVE_HIGH ? LOW : HIGH);
-      delay(200);
-    }
-#endif
-    Serial.println("[LED] Test complete.");
-    return;
-  }
-
-  if (upper == "PING") {
-    sendMeasurementSample();
-    return;
-  }
-
-  Serial.println("ERROR,unknown_command (Type HELP or ? for commands)");
-}
-
-static void sleepUntilNextSample() {
-  Serial.flush();
-  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(SAMPLE_INTERVAL_SECONDS) * 1000000ULL);
-  esp_deep_sleep_start();
+// ── USB debug commands ──────────────────────────────────────────────────────
+static void processUsbCommands() {
+  String line;
+  if (!readSerialLine(line)) return;
+  line.toUpperCase();
+  if (line == "START") setRecording(true, "usb");
+  else if (line == "STOP" || line == "PAUSE") setRecording(false, "usb");
+  else if (line == "BEEP") beep(1);
+  else if (line == "STATUS") {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    Serial.printf("# %s id=%u %s run=%u sensor=%s ch=%u seq=%lu last_raw=%u mm status=%u mac=", nodeName,
+                  NODE_ID, recording ? "RECORDING" : "STANDBY", runId, sensorOk ? "OK" : "MISSING",
+                  currentChannel(), static_cast<unsigned long>(sequence), lastRawDistance, lastRawStatus);
+    printMac(mac);
+    Serial.println();
+  } else Serial.println("# Commands: STATUS | START | STOP | BEEP");
 }
 
 void setup() {
-  Serial.begin(115200);
-  const uint32_t serialDeadline = millis() + 1500;
-  while (!Serial && millis() < serialDeadline) delay(10);
-  delay(300);
+  configureSerial();
+#ifdef NODE_NAME
+  strncpy(nodeName, NODE_NAME, sizeof(nodeName) - 1);
+#else
+  snprintf(nodeName, sizeof(nodeName), "MINIDISK_%02u", static_cast<unsigned>(NODE_ID));
+#endif
 
-  Serial.println("\n╔═════════════════════════════════════════════════════════════════════════╗");
-  Serial.printf("║       SLIMME MINIDISK - SENSOR NODE SELF-DIAGNOSTIC (ID %02d)             ║\n", NODE_ID);
-  Serial.println("╚═════════════════════════════════════════════════════════════════════════╝");
-
-  Serial.printf("[SYSTEM] Node Name: %s | Node ID: %u | Firmware: v%d\n", NODE_NAME, NODE_ID, PACKET_VERSION);
-  Serial.printf("[SYSTEM] ESP32 Chip Model: %s | Free Heap: %u bytes\n", ESP.getChipModel(), ESP.getFreeHeap());
-
-  // 1. Initialize LED
-  initMeasurementLed();
-  Serial.printf("[HARDWARE] Measurement LED configured on GPIO %d (Blinked 2x on boot)\n", MEASUREMENT_LED_PIN);
-
-  // 2. Initialize Button
-  initButton();
+#if BUZZER_ENABLED
+  pinMode(BUZZER_PIN, OUTPUT);
+  buzzerWrite(false);
+#endif
 #if BUTTON_ENABLED
-  const int buttonRaw = digitalRead(BUTTON_PIN);
-  Serial.printf("[HARDWARE] Button configured on GPIO %d (State: %s / Raw: %d)\n",
-                BUTTON_PIN, buttonRaw == LOW ? "PRESSED" : "RELEASED (OK)", buttonRaw);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
 #endif
+  beep(1, 200);  // Power-on
 
-  // 3. I2C & Sensor Check
-  Serial.printf("[I2C BUS] Pins: SDA=GPIO%d, SCL=GPIO%d, XSHUT=GPIO%d, Speed=%lu kHz\n",
-                I2C_SDA_PIN, I2C_SCL_PIN, VL53_XSHUT_PIN, I2C_CLOCK_HZ / 1000UL);
-  scanVl53I2cBus();
-
-#if VL53_I2C_DIAGNOSTIC
-  Serial.println("[DIAG] Continuous I2C diagnostic mode enabled.");
-  return;
-#endif
-
-  // 4. Test Sensor Init
-  Serial.print("[SENSOR] Testing VL53L4CD connection... ");
-  if (startSensor()) {
-    Serial.println("✓ SUCCESS: Sensor initialized and ranging active!");
-    MeasurementPacket testPacket = {};
-    if (readDistance(testPacket)) {
-      Serial.printf("  ✓ Sample test reading: %u mm (Status: %u)\n", testPacket.distance_mm, testPacket.range_status);
-    }
-    stopSensor(); // Put back into Standby
-  } else {
-    Serial.println("✗ FAILED to initialize VL53L4CD sensor.");
-    Serial.println("  --> Check: (1) 3.3V & GND power to sensor (2) SDA & SCL swapped? (3) XSHUT wiring (4) I2C pullups (4.7k-10k)");
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(I2C_CLOCK_HZ);
+  Wire.setTimeOut(20);  // Never hang on a stuck I2C bus
+  sensorOk = initSensor();
+  if (!sensorOk) {
+    delay(150);
+    beep(1, 800);  // Long beep = distance sensor not detected (keeps retrying)
   }
 
-  // 5. ESP-NOW Initialization
-  Serial.print("[WIRELESS] Initializing ESP-NOW radio... ");
-  if (!startEspNow() || !addBroadcastPeer()) {
-    Serial.println("✗ FAILED: ESP-NOW initialization failed!");
-    return;
+  if (!startRadio()) {
+    Serial.println("# [radio] ESP-NOW init failed");
   }
   esp_now_register_recv_cb(onControlReceived);
 
-  uint8_t mac[6];
-  WiFi.macAddress(mac);
-  Serial.print("✓ OK | MAC: "); printMac(mac);
-  Serial.printf(" | Channel: %d\n", ESPNOW_WIFI_CHANNEL);
-
-  // Send initial standby packet so receiver discovers this node immediately
-  Serial.print("[WIRELESS] Broadcasting initial standby discovery packet... ");
-  sendMeasurementSample();
-  Serial.println("✓ Sent.");
-
-  Serial.println("\n─────────────────────────────────────────────────────────────────────────");
-  Serial.println(" [STATUS] Node is in STANDBY mode (LED OFF).");
-  Serial.println("  • Hold button for 2 seconds to START measurement (LED will blink slowly).");
-  Serial.println("  • Or type 'HELP' or '?' for interactive USB cable debug commands.");
-  Serial.println("─────────────────────────────────────────────────────────────────────────\n");
-
-#if USE_DEEP_SLEEP
-  const uint32_t deadline = millis() + COMMAND_LISTEN_MS;
-  while (millis() < deadline) delay(10);
-  if (pendingCommand == COMMAND_START) measuring = true;
-  if (pendingCommand == COMMAND_PAUSE) measuring = false;
-  if (SERIAL_DEBUG) Serial.printf("%s: %s\n", NODE_NAME, measuring ? "measuring" : "paused");
-  sleepUntilNextSample();
-#endif
+  if (SERIAL_DEBUG) {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    Serial.printf("# %s (id %u) ready on channel %u, sensor %s, mac ", nodeName, NODE_ID, currentChannel(),
+                  sensorOk ? "OK" : "MISSING");
+    printMac(mac);
+    Serial.println("\n# Hold the button 2 s to start/stop recording.");
+  }
+  lastSampleMs = millis();
 }
 
 void loop() {
-#if VL53_I2C_DIAGNOSTIC
-  delay(2000);
-  scanVl53I2cBus();
-#elif !USE_DEEP_SLEEP
-  processNodeCableCommands();
+  pollSensor();
   handleButton();
+  processUsbCommands();
 
   if (pendingCommand != COMMAND_NONE) {
-    if (pendingCommand == COMMAND_START) setMeasuringState(true);
-    if (pendingCommand == COMMAND_PAUSE) setMeasuringState(false);
+    const Command c = pendingCommand;
     pendingCommand = COMMAND_NONE;
+    setRecording(c == COMMAND_START, "remote");
   }
 
-  updateMeasurementLed(measuring);
-
-  static uint32_t lastSampleTime = 0;
-  const uint32_t now = millis();
-  if (now - lastSampleTime >= SAMPLE_INTERVAL_MS) {
-    lastSampleTime = now;
-    sendMeasurementSample();
+  if (millis() - lastSampleMs >= SAMPLE_INTERVAL_MS) {
+    lastSampleMs += SAMPLE_INTERVAL_MS;
+    if (millis() - lastSampleMs > SAMPLE_INTERVAL_MS) lastSampleMs = millis();  // catch up after beeps
+    takeSample();
   }
-  delay(10);
-#endif
+  delay(1);
 }
 
 #endif

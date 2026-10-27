@@ -1,71 +1,58 @@
 #pragma once
 
 /*
- * Hardware configuration for one battery-powered VL53L4CD node.
+ * Slimme Minidisk — hardware & protocol configuration
+ * ---------------------------------------------------
+ * Shared by the sensor nodes and the USB receiver.
  *
- * All I2C wires must stay inside the node enclosure (ideally < 20 cm).
- * The wireless link replaces the long I2C cable.
+ * Node identity: every node needs a UNIQUE NODE_ID. The easiest way is to flash
+ * with a dedicated PlatformIO environment, which sets -DNODE_ID for you:
+ *     pio run -e node1 -t upload      (MINIDISK_01)
+ *     pio run -e node2 -t upload      (MINIDISK_02)  ...
  */
 
 #include <Arduino.h>
+#include <WiFi.h>
 
-// Give every physical node a different number: 1, 2, 3, ...
-#define NODE_ID 1
-#define NODE_NAME "MINIDISK_01"  // Fixed identity: change only when commissioning a new node.
+// ── Node identity ────────────────────────────────────────────────────────────
+#ifndef NODE_ID
+#define NODE_ID 1            // Default when flashing the generic "node" environment
+#endif
+// NODE_NAME defaults to "MINIDISK_<id>" (e.g. MINIDISK_01). Define it to override.
 
-// ESP32-S3 DevKitC-1 defaults. Change these for another ESP32 Mini board.
+// ── Pins (ESP32-C3 node) ─────────────────────────────────────────────────────
 #define I2C_SDA_PIN 8
 #define I2C_SCL_PIN 9
 #define VL53_XSHUT_PIN 6
 #define I2C_CLOCK_HZ 400000UL
 
-// LED Indicator Configuration (Opposite side header: GPIO 1)
-#define MEASUREMENT_LED_ENABLED true
-#define MEASUREMENT_LED_PIN 1
-#define MEASUREMENT_LED_ACTIVE_HIGH true
-#define MEASUREMENT_LED_BLINK_INTERVAL_MS 500UL  // Slow blink interval (500ms ON / 500ms OFF)
+#define BUZZER_ENABLED true
+#define BUZZER_PIN 1
+#define BUZZER_ACTIVE_HIGH true
+#define BUZZER_BEEP_DURATION_MS 150UL
+#define BUZZER_BEEP_PAUSE_MS 100UL
 
-// Physical Button Configuration (Opposite side header: GPIO 2 to GND)
 #define BUTTON_ENABLED true
-#define BUTTON_PIN 2
-#define BUTTON_HOLD_TIME_MS 2000UL               // Must hold 2 seconds to start/stop measurement
+#define BUTTON_PIN 2                 // Push button between GPIO 2 and GND
+#define BUTTON_HOLD_TIME_MS 2000UL   // Hold 2 s to START / STOP recording
 
-// Operating mode: false keeps ESP32 awake for continuous live measurement and instant button response
-#define USE_DEEP_SLEEP false
-#define SAMPLE_INTERVAL_MS 1000UL                // Sampling interval in active continuous mode
+// ── Measurement ──────────────────────────────────────────────────────────────
+#define SAMPLE_INTERVAL_MS 1000UL    // One averaged sample is transmitted every second
+#define VL53_TIMING_BUDGET_MS 50     // Each raw ranging takes 50 ms (≈ 20 readings averaged per sample)
+#define VL53_ACCEPT_WARNING_STATUS true  // Accept range status 1/2 (sigma/signal warnings) — common on water
+#define SENSOR_RETRY_MS 5000UL       // Retry sensor initialisation every 5 s if it is missing
 
-// Temporary wiring test. With true, the node enables LPn and repeatedly scans
-// I2C at 100 kHz instead of starting ESP-NOW/ranging. Expect address 0x29.
-// Set back to false after the sensor is detected.
-#define VL53_I2C_DIAGNOSTIC false
+// ── Radio (ESP-NOW) ──────────────────────────────────────────────────────────
+#define ESPNOW_WIFI_CHANNEL 1        // Nodes and receiver MUST use the same channel
+// Many ESP32-C3 "Mini/Super Mini" boards have a poor antenna layout and fail to
+// transmit reliably at full power. 8.5 dBm is the well-known fix and still gives
+// tens of metres of range. Try WIFI_POWER_19_5dBm on boards with a good antenna.
+#define RADIO_TX_POWER WIFI_POWER_8_5dBm
 
-// Sampling interval for deep sleep mode.
-#define SAMPLE_INTERVAL_SECONDS 15UL
-#define VL53_TIMING_BUDGET_MS 50
-#define COMMAND_LISTEN_MS 700UL  // Node stays awake briefly after every status packet.
-#define START_MEASURING_AFTER_FLASH false        // Start paused, waiting for button or computer START
-
-// The ST library uses the VL53L4CD's 8-bit I2C address (0x52 = 0x29 7-bit).
-#define VL53_DEFAULT_ADDRESS_8BIT 0x52
-
-// ESP-NOW radio channel. All nodes and receiver must use this same channel.
-#define ESPNOW_WIFI_CHANNEL 1
-
-// Leave true for first tests. Set false for field deployment to reduce power use.
+// Print debug information on the USB serial port (harmless in the field).
 #define SERIAL_DEBUG true
 
-// Battery measurement is optional. Set false when no voltage divider is fitted.
-#define BATTERY_MONITOR_ENABLED false
-#define BATTERY_ADC_PIN 4
-// V_battery = V_adc * BATTERY_DIVIDER_RATIO. Example 100k/100k divider => 2.0.
-#define BATTERY_DIVIDER_RATIO 2.0f
-
-// Broadcast works immediately with a receiver on the same channel. It has no ACK.
-// For acknowledged unicast, set USE_BROADCAST to false and enter receiver's STA MAC.
-#define USE_BROADCAST true
-static const uint8_t RECEIVER_MAC[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-
-// Packet identifier. Receiver discards other ESP-NOW traffic.
-static constexpr uint32_t PACKET_MAGIC = 0x4D444B31UL;  // "MDK1"
-static constexpr uint8_t PACKET_VERSION = 1;
-static constexpr uint32_t COMMAND_MAGIC = 0x4D444B43UL; // "MDKC"
+// ── Protocol identifiers (do not change unless you reflash every device) ────
+static constexpr uint32_t PACKET_MAGIC = 0x4D444B31UL;   // "MDK1"
+static constexpr uint8_t PACKET_VERSION = 2;
+static constexpr uint32_t COMMAND_MAGIC = 0x4D444B43UL;  // "MDKC"

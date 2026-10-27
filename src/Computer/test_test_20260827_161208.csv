@@ -1,8 +1,0 @@
-timestamp,campaign,location,notes,sensor_name,node_id,distance_mm,range_status,tension_cm_h2o,battery_mv,source_mac
-2026-08-27T16:12:14,test,test,,MINIDISK_01,1,93,0,0,NA,A0:F2:62:A5:5A:F4
-2026-08-27T16:12:17,test,test,,MINIDISK_01,1,88,0,0,NA,A0:F2:62:A5:5A:F4
-2026-08-27T16:12:18,test,test,,MINIDISK_01,1,92,0,0,NA,A0:F2:62:A5:5A:F4
-2026-08-27T16:12:36,test,test,,MINIDISK_01,1,102,0,0,NA,A0:F2:62:A5:5A:F4
-2026-08-27T16:12:37,test,test,,MINIDISK_01,1,103,0,0,NA,A0:F2:62:A5:5A:F4
-2026-08-27T16:12:38,test,test,,MINIDISK_01,1,159,0,0,NA,A0:F2:62:A5:5A:F4
-2026-08-27T16:12:39,test,test,,MINIDISK_01,1,61,0,0,NA,A0:F2:62:A5:5A:F4

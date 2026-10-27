@@ -1,5 +1,0 @@
-timestamp,measurement_name,tension_hpa,notes,sensor_name,node_id,distance_mm,range_status,battery_mv,source_mac
-2026-07-28T13:10:22,test,,,MINIDISK_01,1,174,0,NA,A0:F2:62:A5:E3:AC
-2026-07-28T13:10:38,test,,,MINIDISK_01,1,41,0,NA,A0:F2:62:A5:E3:AC
-2026-07-28T13:10:54,test,,,MINIDISK_01,1,100,0,NA,A0:F2:62:A5:E3:AC
-2026-07-28T13:11:43,test,,,MINIDISK_01,1,109,0,NA,A0:F2:62:A5:E3:AC

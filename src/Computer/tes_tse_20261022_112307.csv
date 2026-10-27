@@ -1,0 +1,5 @@
+timestamp,campaign,location,notes,sensor_name,node_id,distance_mm,range_status,tension_cm_h2o,battery_mv,source_mac
+2026-10-22T11:23:13,tes,tse,,MINIDISK_02,2,80,0,0,NA,A0:F2:62:A5:5A:F4
+2026-10-22T11:23:34,tes,tse,,MINIDISK_02,2,80,0,2,NA,A0:F2:62:A5:5A:F4
+2026-10-22T11:23:56,tes,tse,,MINIDISK_02,2,79,0,2,NA,A0:F2:62:A5:5A:F4
+2026-10-22T11:24:07,tes,tse,,MINIDISK_02,2,80,0,2,NA,A0:F2:62:A5:5A:F4
