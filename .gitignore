@@ -1,8 +1,9 @@
 Invoice
-src/Raspberrypi/__pycache__
+Documentation.pdf
+/src/Raspberrypi/
 
 PCB_microcontroller
-src/Arduino
-src/DigiDisk
-srx/Rasberrypi
-Model/Fusion360/Old_version
+/src/Arduino/
+/src/DigiDisk/
+
+/Model/Fusion360/Old_version/

@@ -5,9 +5,11 @@
 [![Sensor](https://img.shields.io/badge/Sensor-ST%20VL53L4CD%20ToF-informational.svg)](https://www.st.com/en/imaging-and-photonics-solutions/vl53l4cd.html)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Slimme Minidisk** is a wireless data logger based on the principle of the [METER Mini Disk Infiltrometers](https://www.metergroup.com/). Instead of timing water level drops with a stopwatch and reading the meniscus by eye, a 3D-printed cap mounted on top of the reservoir measures the distance to the water surface with a Time-of-Flight laser sensor (ST VL53L4CD) and sends the data wirelessly to a laptop. 
+**Slimme Minidisk** s a wireless data logger designed to measure the distance to the water surface inside a reservoir. It is based on the principle of the [METER Mini Disk Infiltrometers](https://www.metergroup.com/). 
 
-In this example, the device is used with a similar infiltrometer than [METER Mini Disk Infiltrometers](https://www.metergroup.com/), but the concept can be adapted to other devices that require water-level monitoring.
+Instead of manually timing water-level drops with a stopwatch and reading the meniscus by eye, a 3D-printed cap mounted on top of the reservoir measures the distance to the water surface using a Time-of-Flight (ToF) laser sensor (ST VL53L4CD). The measurements are then transmitted wirelessly to a laptop.
+
+In this example, the device was developed for an infiltrometer similar to the [METER Mini Disk Infiltrometers](https://www.metergroup.com/), with one key difference: the Mariotte bottle is positioned alongside the mini disk rather than being integrated into it. However, the concept can be adapted to other devices that require water-level monitoring.
 
 A single USB receiver can communicate with multiple infiltrometers simultaneously via ESP-NOW (2.4 GHz), without requiring a Wi-Fi network or device pairing. This makes the system suitable for conducting parallel measurements with multiple tension infiltrometers in a field plot.
 
@@ -78,8 +80,6 @@ python src/Computer/minidisk_acquisition.py
 Data is written live to `{campaign}_{location}_{YYYYMMDD_HHMM}.csv` (by default in `~/Documents/SlimmeMinidisk/`) while a node is recording. Each row logs:
 
 `pc_time`, `campaign`, `location`, `operator`, `notes`, `sensor_name`, `node_id`, `run`, `seq`, `time_s`, `distance_mm`, `valid`, `range_status`, `n_avg`, `tension_cm`
-
-From `distance_mm` vs. `time_s` and the reservoir cross-section, cumulative infiltration $I(t)$ can be fitted directly with the method of Zhang (1997) ($I = C_1 t + C_2 \sqrt{t}$) to obtain unsaturated hydraulic conductivity $K(h_0)$.
 
 ## Repository layout
 
