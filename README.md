@@ -1,4 +1,4 @@
-# Slimme Minidisk
+# Wireless water-level logger for tension infiltrometers
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32-orange.svg)](https://platformio.org/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Wireless](https://img.shields.io/badge/Wireless-ESP--NOW%202.4GHz-brightgreen.svg)]()
