@@ -5,9 +5,9 @@
 [![Sensor](https://img.shields.io/badge/Sensor-ST%20VL53L4CD%20ToF-informational.svg)](https://www.st.com/en/imaging-and-photonics-solutions/vl53l4cd.html)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Slimme Minidisk** s a wireless data logger designed to measure the distance to the water surface inside a reservoir. It is based on the principle of the [METER Mini Disk Infiltrometers](https://www.metergroup.com/). 
+**Slimme Minidisk** s a wireless data logger designed to measure the distance to the water surface inside a reservoir. 
 
-Instead of manually timing water-level drops with a stopwatch and reading the meniscus by eye, a 3D-printed cap mounted on top of the reservoir measures the distance to the water surface using a Time-of-Flight (ToF) laser sensor (ST VL53L4CD). The measurements are then transmitted wirelessly to a laptop.
+The Slimme Minidisk was conceptualized to improve the accuracy and efficiency of soil infiltration measurements while allowing a greater number of replicates to be performed within the same timeframe. Instead of manually timing water-level drops with a stopwatch and reading the meniscus by eye, a 3D-printed cap mounted on top of the reservoir measures the distance to the water surface using a Time-of-Flight (ToF) laser sensor (ST VL53L4CD). The measurements are then transmitted wirelessly to a laptop, enabling automated data collection. This reduces the time and effort required for each measurement and allows multiple infiltrometers to be monitored simultaneously, increasing the number of replicates that can be performed at the same time.
 
 In this example, the device was developed for an infiltrometer similar to the [METER Mini Disk Infiltrometers](https://www.metergroup.com/), with one key difference: the Mariotte bottle is positioned alongside the mini disk rather than being integrated into it. However, the concept can be adapted to other devices that require water-level monitoring.
 
